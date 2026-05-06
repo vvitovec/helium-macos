@@ -1,0 +1,885 @@
+Index: src/chrome/browser/ui/BUILD.gn
+===================================================================
+--- src.orig/chrome/browser/ui/BUILD.gn
++++ src/chrome/browser/ui/BUILD.gn
+@@ -3358,6 +3358,8 @@ static_library("ui") {
+       "views/frame/browser_native_widget_factory_mac.mm",
+       "views/frame/browser_native_widget_mac.h",
+       "views/frame/browser_native_widget_mac.mm",
++      "views/frame/helium_notch_fullscreen_controller_mac.h",
++      "views/frame/helium_notch_fullscreen_controller_mac.mm",
+       "views/frame/immersive_mode_controller_mac.h",
+       "views/frame/immersive_mode_controller_mac.mm",
+       "views/frame/immersive_mode_overlay_views_mac.h",
+Index: src/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
+===================================================================
+--- src.orig/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
++++ src/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
+@@ -141,6 +141,13 @@ void BrowserFrameViewMac::OnFullscreenSt
+     EmitFullscreenSessionHistograms();
+   }
+ 
++  if (GetBrowserView()->IsHeliumNotchFullscreenActive()) {
++    ImmersiveModeController::From(GetBrowserView()->browser())
++        ->SetEnabled(false);
++    GetBrowserView()->DeprecatedLayoutImmediately();
++    return;
++  }
++
+   if (GetBrowserView()->UsesImmersiveFullscreenMode()) {
+     ImmersiveModeController::From(GetBrowserView()->browser())
+         ->SetEnabled(GetBrowserView()->IsFullscreen());
+Index: src/chrome/browser/ui/views/frame/browser_view.cc
+===================================================================
+--- src.orig/chrome/browser/ui/views/frame/browser_view.cc
++++ src/chrome/browser/ui/views/frame/browser_view.cc
+@@ -373,6 +373,7 @@
+ #if BUILDFLAG(IS_MAC)
+ #include "chrome/browser/global_keyboard_shortcuts_mac.h"
+ #include "chrome/browser/ui/fullscreen_util_mac.h"
++#include "chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.h"
+ #include "chrome/browser/ui/views/frame/immersive_mode_overlay_views_mac.h"
+ #include "components/remote_cocoa/app_shim/application_bridge.h"
+ #include "components/remote_cocoa/browser/application_host.h"
+@@ -1186,6 +1187,12 @@ BrowserView::BrowserView(Browser* browse
+ }
+ 
+ BrowserView::~BrowserView() {
++#if BUILDFLAG(IS_MAC)
++  if (helium_notch_fullscreen_controller_) {
++    helium_notch_fullscreen_controller_->Exit();
++  }
++#endif
++
+   // Remove the layout manager to avoid dangling. This needs to be earlier than
+   // other cleanups that destroy views referenced in the layout manager.
+   SetLayoutManager(nullptr);
+@@ -1376,6 +1383,18 @@ bool BrowserView::UsesImmersiveFullscree
+ bool BrowserView::UsesImmersiveFullscreenTabbedMode() const {
+   return false;
+ }
++
++bool BrowserView::IsHeliumNotchFullscreenActive() const {
++  return helium_notch_fullscreen_controller_ &&
++         helium_notch_fullscreen_controller_->IsActive();
++}
++
++HeliumNotchFullscreenMetrics BrowserView::GetHeliumNotchFullscreenMetrics()
++    const {
++  return helium_notch_fullscreen_controller_
++             ? helium_notch_fullscreen_controller_->GetMetrics()
++             : HeliumNotchFullscreenMetrics();
++}
+ #endif
+ 
+ TabStripRegionView* BrowserView::tab_strip_view() const {
+@@ -2716,11 +2735,15 @@ bool BrowserView::ShouldHideUIForFullscr
+     return false;
+   }
+ 
+-  return browser_widget_->IsFullscreen() &&
+-         GetFrameView()->ShouldHideTopUIInFullscreen();
++  return IsFullscreen() && GetFrameView()->ShouldHideTopUIInFullscreen();
+ }
+ 
+ bool BrowserView::IsFullscreen() const {
++#if BUILDFLAG(IS_MAC)
++  if (IsHeliumNotchFullscreenActive()) {
++    return true;
++  }
++#endif
+   return browser_widget_->IsFullscreen();
+ }
+ 
+@@ -3591,6 +3614,11 @@ void BrowserView::DisableTabStripEditing
+ 
+ bool BrowserView::IsToolbarVisible() const {
+ #if BUILDFLAG(IS_MAC)
++  if (IsHeliumNotchFullscreenActive() &&
++      !fullscreen_utils::IsInContentFullscreen(browser())) {
++    return true;
++  }
++
+   // Immersive full screen makes it possible to display the toolbar when
+   // kShowFullscreenToolbar is not set.
+   if (!UsesImmersiveFullscreenMode()) {
+@@ -4816,6 +4844,16 @@ void BrowserView::OnWidgetActivationChan
+ 
+ void BrowserView::OnWidgetBoundsChanged(views::Widget* widget,
+                                         const gfx::Rect& new_bounds) {
++#if BUILDFLAG(IS_MAC)
++  if (helium_notch_fullscreen_controller_ &&
++      helium_notch_fullscreen_controller_->IsActive() &&
++      !helium_notch_fullscreen_controller_->CanUseNotchFullscreen()) {
++    helium_notch_fullscreen_controller_->Exit();
++    FullscreenStateChanged();
++    DeprecatedLayoutImmediately();
++  }
++#endif
++
+   TryNotifyWindowBoundsChanged(new_bounds);
+ }
+ 
+@@ -5357,6 +5395,17 @@ int BrowserView::NonClientHitTest(const
+   views::View::ConvertPointToTarget(parent(), this,
+                                     &point_in_browser_view_coords);
+ 
++#if BUILDFLAG(IS_MAC)
++  if (IsHeliumNotchFullscreenActive()) {
++    const HeliumNotchFullscreenMetrics metrics =
++        GetHeliumNotchFullscreenMetrics();
++    if (metrics.active &&
++        metrics.notch_gap.Contains(point_in_browser_view_coords)) {
++      return HTNOWHERE;
++    }
++  }
++#endif  // BUILDFLAG(IS_MAC)
++
+   // Check if the point is in the web_app_frame_toolbar_. Because this toolbar
+   // can entirely be within the window controls overlay area, this check needs
+   // to be done before the window controls overlay area check below.
+@@ -6245,16 +6294,31 @@ void BrowserView::ProcessFullscreen(bool
+ 
+   PrepareFullscreen(fullscreen);
+ 
++#if BUILDFLAG(IS_MAC)
++  const bool handled_by_notch_fullscreen =
++      ShouldUseHeliumNotchFullscreen(fullscreen);
++  if (handled_by_notch_fullscreen) {
++    auto* notch_fullscreen_controller = GetHeliumNotchFullscreenController();
++    if (fullscreen) {
++      notch_fullscreen_controller->Enter();
++    } else {
++      notch_fullscreen_controller->Exit();
++    }
++    FullscreenStateChanged();
++  } else {
++    // TODO(b/40276379): Move this out from ProcessFullscreen.
++    RequestFullscreen(fullscreen, display_id);
++  }
++#else
+   // TODO(b/40276379): Move this out from ProcessFullscreen.
+   RequestFullscreen(fullscreen, display_id);
+ 
+-#if !BUILDFLAG(IS_MAC)
+   // On Mac platforms, FullscreenStateChanged() is invoked from
+   // BrowserNativeWidgetMac::OnWindowFullscreenTransitionComplete when the
+   // asynchronous fullscreen transition is complete. On other platforms, there
+   // is no asynchronous transition so we synchronously invoke the function.
+   FullscreenStateChanged();
+-#endif
++#endif  // BUILDFLAG(IS_MAC)
+ 
+   // Undo our anti-jankiness hacks and force a re-layout.
+   in_process_fullscreen_ = false;
+@@ -6268,6 +6332,43 @@ void BrowserView::ProcessFullscreen(bool
+   }
+ }
+ 
++#if BUILDFLAG(IS_MAC)
++HeliumNotchFullscreenControllerMac*
++BrowserView::GetHeliumNotchFullscreenController() {
++  if (!helium_notch_fullscreen_controller_) {
++    helium_notch_fullscreen_controller_ =
++        std::make_unique<HeliumNotchFullscreenControllerMac>(this);
++  }
++  return helium_notch_fullscreen_controller_.get();
++}
++
++bool BrowserView::ShouldUseHeliumNotchFullscreen(bool fullscreen) {
++  auto* notch_fullscreen_controller = GetHeliumNotchFullscreenController();
++  if (notch_fullscreen_controller->IsActive()) {
++    return true;
++  }
++
++  if (!fullscreen ||
++      !base::CommandLine::ForCurrentProcess()->HasSwitch(
++          switches::kHeliumNotchFullscreen) ||
++      IsForceFullscreen() ||
++      platform_util::IsBrowserLockedFullscreen(browser())) {
++    return false;
++  }
++
++  auto* fullscreen_controller =
++      exclusive_access_context_->GetExclusiveAccessManager()
++          ->fullscreen_controller();
++  if (fullscreen_controller->IsWindowFullscreenForTabOrPending() ||
++      fullscreen_controller->IsExtensionFullscreenOrPending() ||
++      fullscreen_controller->IsTabFullscreen()) {
++    return false;
++  }
++
++  return notch_fullscreen_controller->CanUseNotchFullscreen();
++}
++#endif
++
+ void BrowserView::RequestFullscreen(bool fullscreen, int64_t display_id) {
+ #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
+   // Request target display fullscreen from lower layers on supported platforms.
+Index: src/chrome/browser/ui/views/frame/browser_view.h
+===================================================================
+--- src.orig/chrome/browser/ui/views/frame/browser_view.h
++++ src/chrome/browser/ui/views/frame/browser_view.h
+@@ -83,6 +83,10 @@ struct DropData;
+ class ExclusiveAccessBubbleViews;
+ class ExclusiveAccessBubbleViewsContext;
+ class HeliumLayoutStateController;
++#if BUILDFLAG(IS_MAC)
++class HeliumNotchFullscreenControllerMac;
++struct HeliumNotchFullscreenMetrics;
++#endif
+ class InfoBarContainerView;
+ class LocationBarView;
+ class MultiContentsView;
+@@ -270,6 +274,9 @@ class BrowserView : public BrowserWindow
+   // non-tabbed mode the tab strip is positioned below the titlebar.
+   // The return value is determined by the type of browser.
+   bool UsesImmersiveFullscreenTabbedMode() const;
++
++  bool IsHeliumNotchFullscreenActive() const;
++  HeliumNotchFullscreenMetrics GetHeliumNotchFullscreenMetrics() const;
+ #endif
+ 
+   // Container for the web contents.
+@@ -1078,6 +1085,11 @@ class BrowserView : public BrowserWindow
+   // Request the underlying platform to make the window fullscreen.
+   void RequestFullscreen(bool fullscreen, int64_t display_id);
+ 
++#if BUILDFLAG(IS_MAC)
++  HeliumNotchFullscreenControllerMac* GetHeliumNotchFullscreenController();
++  bool ShouldUseHeliumNotchFullscreen(bool fullscreen);
++#endif
++
+   void SynchronizeRenderWidgetHostVisualPropertiesForMainFrame();
+   void NotifyWidgetSizeConstraintsChanged();
+ 
+@@ -1409,6 +1421,11 @@ class BrowserView : public BrowserWindow
+   // Kiosk session.
+   bool force_fullscreen_ = false;
+ 
++#if BUILDFLAG(IS_MAC)
++  std::unique_ptr<HeliumNotchFullscreenControllerMac>
++      helium_notch_fullscreen_controller_;
++#endif
++
+   // The runner used for displaying tab-loading animations.
+   std::unique_ptr<gfx::AnimationRunner> loading_animation_;
+ 
+Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.h
+===================================================================
+--- /dev/null
++++ src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.h
+@@ -0,0 +1,58 @@
++// Copyright 2026 The Helium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_FRAME_HELIUM_NOTCH_FULLSCREEN_CONTROLLER_MAC_H_
++#define CHROME_BROWSER_UI_VIEWS_FRAME_HELIUM_NOTCH_FULLSCREEN_CONTROLLER_MAC_H_
++
++#include <memory>
++
++#include "base/memory/raw_ptr.h"
++#include "ui/gfx/geometry/rect.h"
++
++class BrowserView;
++
++struct HeliumNotchFullscreenMetrics {
++  bool active = false;
++  bool has_notch = false;
++  gfx::Rect top_left_area;
++  gfx::Rect top_right_area;
++  gfx::Rect notch_gap;
++  int top_strip_height = 0;
++};
++
++// Testable geometry helper. All rectangles are in screen-local DIP coordinates
++// with a top-left origin, matching Views layout coordinates.
++HeliumNotchFullscreenMetrics CalculateHeliumNotchFullscreenMetrics(
++    const gfx::Rect& screen_bounds,
++    const gfx::Rect& top_left_area,
++    const gfx::Rect& top_right_area,
++    int safe_area_top);
++
++// Controls Helium's custom macOS notch fullscreen mode. This class
++// intentionally uses only public AppKit APIs and never enters native macOS
++// fullscreen.
++class HeliumNotchFullscreenControllerMac {
++ public:
++  explicit HeliumNotchFullscreenControllerMac(BrowserView* browser_view);
++  HeliumNotchFullscreenControllerMac(
++      const HeliumNotchFullscreenControllerMac&) = delete;
++  HeliumNotchFullscreenControllerMac& operator=(
++      const HeliumNotchFullscreenControllerMac&) = delete;
++  ~HeliumNotchFullscreenControllerMac();
++
++  bool IsActive() const;
++  bool CanUseNotchFullscreen() const;
++  void Enter();
++  void Exit();
++  HeliumNotchFullscreenMetrics GetMetrics() const;
++
++ private:
++  struct SavedState;
++
++  raw_ptr<BrowserView> browser_view_;
++  std::unique_ptr<SavedState> saved_state_;
++  bool active_ = false;
++};
++
++#endif  // CHROME_BROWSER_UI_VIEWS_FRAME_HELIUM_NOTCH_FULLSCREEN_CONTROLLER_MAC_H_
+Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.mm
+===================================================================
+--- /dev/null
++++ src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.mm
+@@ -0,0 +1,175 @@
++// Copyright 2026 The Helium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.h"
++
++#include <AppKit/AppKit.h>
++
++#include <algorithm>
++#include <cmath>
++
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/frame/browser_widget.h"
++#include "ui/gfx/geometry/rect.h"
++#include "ui/views/widget/widget.h"
++
++namespace {
++
++int RoundCGFloat(CGFloat value) {
++  return static_cast<int>(std::round(value));
++}
++
++gfx::Rect ScreenLocalRectFromNSRect(NSRect screen_frame, NSRect rect) {
++  gfx::Rect result(RoundCGFloat(NSMinX(rect) - NSMinX(screen_frame)),
++                   RoundCGFloat(NSMaxY(screen_frame) - NSMaxY(rect)),
++                   RoundCGFloat(NSWidth(rect)), RoundCGFloat(NSHeight(rect)));
++  gfx::Rect local_screen(0, 0, RoundCGFloat(NSWidth(screen_frame)),
++                         RoundCGFloat(NSHeight(screen_frame)));
++  result.Intersect(local_screen);
++  return result;
++}
++
++NSWindow* GetWindow(BrowserView* browser_view) {
++  if (!browser_view || !browser_view->GetWidget()) {
++    return nil;
++  }
++  return browser_view->GetWidget()->GetNativeWindow().GetNativeNSWindow();
++}
++
++HeliumNotchFullscreenMetrics GetScreenMetrics(NSScreen* screen) {
++  if (!screen) {
++    return {};
++  }
++
++  if (@available(macos 12.0, *)) {
++    const NSEdgeInsets safe_area_insets = [screen safeAreaInsets];
++    const NSRect screen_frame = [screen frame];
++    const gfx::Rect screen_bounds(0, 0, RoundCGFloat(NSWidth(screen_frame)),
++                                  RoundCGFloat(NSHeight(screen_frame)));
++
++    return CalculateHeliumNotchFullscreenMetrics(
++        screen_bounds,
++        ScreenLocalRectFromNSRect(screen_frame, [screen auxiliaryTopLeftArea]),
++        ScreenLocalRectFromNSRect(screen_frame, [screen auxiliaryTopRightArea]),
++        RoundCGFloat(safe_area_insets.top));
++  }
++
++  return {};
++}
++
++}  // namespace
++
++struct HeliumNotchFullscreenControllerMac::SavedState {
++  NSRect frame = NSZeroRect;
++  NSUInteger style_mask = 0;
++  NSWindowCollectionBehavior collection_behavior = 0;
++  NSApplicationPresentationOptions presentation_options = 0;
++};
++
++HeliumNotchFullscreenMetrics CalculateHeliumNotchFullscreenMetrics(
++    const gfx::Rect& screen_bounds,
++    const gfx::Rect& top_left_area,
++    const gfx::Rect& top_right_area,
++    int safe_area_top) {
++  HeliumNotchFullscreenMetrics metrics;
++  if (safe_area_top <= 0 || top_left_area.IsEmpty() ||
++      top_right_area.IsEmpty() || top_left_area.right() >= top_right_area.x()) {
++    return metrics;
++  }
++
++  metrics.has_notch = true;
++  metrics.top_strip_height = std::max(
++      {safe_area_top, top_left_area.height(), top_right_area.height()});
++  metrics.top_strip_height =
++      std::min(metrics.top_strip_height, screen_bounds.height());
++
++  metrics.top_left_area = top_left_area;
++  metrics.top_left_area.set_y(0);
++  metrics.top_left_area.set_height(metrics.top_strip_height);
++  metrics.top_left_area.Intersect(screen_bounds);
++
++  metrics.top_right_area = top_right_area;
++  metrics.top_right_area.set_y(0);
++  metrics.top_right_area.set_height(metrics.top_strip_height);
++  metrics.top_right_area.Intersect(screen_bounds);
++
++  metrics.notch_gap =
++      gfx::Rect(metrics.top_left_area.right(), 0,
++                metrics.top_right_area.x() - metrics.top_left_area.right(),
++                metrics.top_strip_height);
++  metrics.notch_gap.Intersect(screen_bounds);
++  return metrics;
++}
++
++HeliumNotchFullscreenControllerMac::HeliumNotchFullscreenControllerMac(
++    BrowserView* browser_view)
++    : browser_view_(browser_view) {}
++
++HeliumNotchFullscreenControllerMac::~HeliumNotchFullscreenControllerMac() {
++  Exit();
++}
++
++bool HeliumNotchFullscreenControllerMac::IsActive() const {
++  return active_;
++}
++
++bool HeliumNotchFullscreenControllerMac::CanUseNotchFullscreen() const {
++  NSWindow* window = GetWindow(browser_view_);
++  return GetScreenMetrics([window screen]).has_notch;
++}
++
++void HeliumNotchFullscreenControllerMac::Enter() {
++  if (active_) {
++    return;
++  }
++
++  NSWindow* window = GetWindow(browser_view_);
++  NSScreen* screen = [window screen];
++  if (!GetScreenMetrics(screen).has_notch) {
++    return;
++  }
++
++  auto saved_state = std::make_unique<SavedState>();
++  saved_state->frame = [window frame];
++  saved_state->style_mask = [window styleMask];
++  saved_state->collection_behavior = [window collectionBehavior];
++  saved_state->presentation_options = [NSApp presentationOptions];
++
++  [NSApp setPresentationOptions:saved_state->presentation_options |
++                                NSApplicationPresentationAutoHideDock |
++                                NSApplicationPresentationAutoHideMenuBar];
++  [window setStyleMask:NSWindowStyleMaskBorderless];
++  [window setFrame:[screen frame] display:YES animate:NO];
++  [window makeKeyAndOrderFront:nil];
++
++  saved_state_ = std::move(saved_state);
++  active_ = true;
++}
++
++void HeliumNotchFullscreenControllerMac::Exit() {
++  if (!active_) {
++    return;
++  }
++
++  NSWindow* window = GetWindow(browser_view_);
++  if (saved_state_) {
++    [NSApp setPresentationOptions:saved_state_->presentation_options];
++    if (window) {
++      [window setStyleMask:saved_state_->style_mask];
++      [window setCollectionBehavior:saved_state_->collection_behavior];
++      [window setFrame:saved_state_->frame display:YES animate:NO];
++    }
++  }
++
++  saved_state_.reset();
++  active_ = false;
++}
++
++HeliumNotchFullscreenMetrics HeliumNotchFullscreenControllerMac::GetMetrics()
++    const {
++  NSWindow* window = GetWindow(browser_view_);
++  HeliumNotchFullscreenMetrics metrics = GetScreenMetrics([window screen]);
++  metrics.active = active_ && metrics.has_notch;
++  return metrics;
++}
+Index: src/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate.h
+===================================================================
+--- src.orig/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate.h
++++ src/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate.h
+@@ -5,10 +5,15 @@
+ #ifndef CHROME_BROWSER_UI_VIEWS_FRAME_LAYOUT_BROWSER_VIEW_LAYOUT_DELEGATE_H_
+ #define CHROME_BROWSER_UI_VIEWS_FRAME_LAYOUT_BROWSER_VIEW_LAYOUT_DELEGATE_H_
+ 
++#include "build/build_config.h"
+ #include "chrome/browser/ui/views/frame/layout/browser_view_layout_params.h"
+ #include "ui/gfx/native_ui_types.h"
+ #include "ui/views/layout/layout_types.h"
+ 
++#if BUILDFLAG(IS_MAC)
++#include "chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.h"
++#endif
++
+ class ExclusiveAccessBubbleViews;
+ class ImmersiveModeController;
+ 
+@@ -52,6 +57,12 @@ class BrowserViewLayoutDelegate {
+   virtual float GetTopChromeRevealRatio() const { return 1.f; }
+   virtual float GetSideChromeRevealRatio() const { return 1.f; }
+   virtual bool IsZenModeSideChromePinned() const { return false; }
++#if BUILDFLAG(IS_MAC)
++  virtual bool IsHeliumNotchFullscreenActive() const { return false; }
++  virtual HeliumNotchFullscreenMetrics GetHeliumNotchFullscreenMetrics() const {
++    return {};
++  }
++#endif
+   virtual gfx::NativeView GetHostViewForAnchoring() const = 0;
+   virtual bool HasFindBarController() const = 0;
+   virtual void MoveWindowForFindBarIfNecessary() const = 0;
+Index: src/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
+===================================================================
+--- src.orig/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
++++ src/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
+@@ -23,6 +23,10 @@
+ #include "ui/gfx/geometry/rect.h"
+ #include "ui/views/view.h"
+ 
++#if BUILDFLAG(IS_MAC)
++#include "chrome/browser/ui/fullscreen_util_mac.h"
++#endif
++
+ #if BUILDFLAG(ENABLE_WEBUI_TAB_STRIP)
+ #include "chrome/browser/ui/views/frame/webui_tab_strip_container_view.h"
+ #endif
+@@ -231,6 +235,18 @@ bool BrowserViewLayoutDelegateImpl::IsZe
+   return browser_view_->IsZenModeSideChromePinned();
+ }
+ 
++#if BUILDFLAG(IS_MAC)
++bool BrowserViewLayoutDelegateImpl::IsHeliumNotchFullscreenActive() const {
++  return browser_view_->IsHeliumNotchFullscreenActive() &&
++         !fullscreen_utils::IsInContentFullscreen(browser_view_->browser());
++}
++
++HeliumNotchFullscreenMetrics
++BrowserViewLayoutDelegateImpl::GetHeliumNotchFullscreenMetrics() const {
++  return browser_view_->GetHeliumNotchFullscreenMetrics();
++}
++#endif
++
+ int BrowserViewLayoutDelegateImpl::GetExtraInfobarOffset() const {
+ #if BUILDFLAG(IS_MAC)
+   auto* const controller = GetImmersiveModeController();
+Index: src/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.h
+===================================================================
+--- src.orig/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.h
++++ src/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.h
+@@ -7,6 +7,7 @@
+ 
+ #include "base/auto_reset.h"
+ #include "base/memory/raw_ref.h"
++#include "build/build_config.h"
+ #include "chrome/browser/ui/views/frame/layout/browser_view_layout_delegate.h"
+ 
+ class BrowserFrameView;
+@@ -47,6 +48,10 @@ class BrowserViewLayoutDelegateImpl : pu
+   float GetTopChromeRevealRatio() const override;
+   float GetSideChromeRevealRatio() const override;
+   bool IsZenModeSideChromePinned() const override;
++#if BUILDFLAG(IS_MAC)
++  bool IsHeliumNotchFullscreenActive() const override;
++  HeliumNotchFullscreenMetrics GetHeliumNotchFullscreenMetrics() const override;
++#endif
+   gfx::NativeView GetHostViewForAnchoring() const override;
+   bool HasFindBarController() const override;
+   void MoveWindowForFindBarIfNecessary() const override;
+Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+===================================================================
+--- src.orig/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
++++ src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+@@ -37,6 +37,7 @@
+ #include "chrome/browser/ui/views/tabs/projects/layout_constants.h"
+ #include "chrome/browser/ui/views/tabs/projects/projects_panel_utils.h"
+ #include "chrome/browser/ui/views/tabs/projects/projects_panel_view.h"
++#include "chrome/browser/ui/views/web_apps/frame_toolbar/web_app_frame_toolbar_view.h"
+ #include "ui/gfx/geometry/outsets.h"
+ #include "ui/gfx/geometry/size.h"
+ #include "ui/views/controls/separator.h"
+@@ -62,6 +63,10 @@ constexpr int kVerticalTabsGrabHandleSiz
+ // against the frame controls when it is the top-most row.
+ constexpr int kTopToolbarExclusion = 10;
+ 
++#if BUILDFLAG(IS_MAC)
++constexpr int kHeliumNotchFullscreenMinTopStripHeight = 44;
++#endif
++
+ int ScaleExtent(int extent, float ratio) {
+   return base::ClampRound(std::max(0, extent) * ratio);
+ }
+@@ -149,6 +154,193 @@ BrowserViewTabbedLayoutImpl::BrowserView
+ 
+ BrowserViewTabbedLayoutImpl::~BrowserViewTabbedLayoutImpl() = default;
+ 
++#if BUILDFLAG(IS_MAC)
++BrowserViewTabbedLayoutImpl::ProposedLayout
++BrowserViewTabbedLayoutImpl::CalculateNotchFullscreenLayout(
++    const BrowserLayoutParams& browser_params) const {
++  ProposedLayout layout;
++  const gfx::Rect bounds = browser_params.visual_client_area;
++
++  auto hide_browser_child = [&](views::View* view) {
++    if (IsParentedTo(view, views().browser_view)) {
++      layout.AddChild(view, gfx::Rect(), false);
++    }
++  };
++
++  auto hide_top_container_child = [&](ProposedLayout& top_container_layout,
++                                      views::View* view,
++                                      views::View* top_container) {
++    if (IsParentedTo(view, top_container)) {
++      top_container_layout.AddChild(view, gfx::Rect(), false);
++    }
++  };
++
++  if (views().window_scrim) {
++    layout.AddChild(views().window_scrim, bounds);
++  }
++
++  if (IsParentedTo(views().web_app_frame_toolbar, views().browser_view)) {
++    layout.AddChild(views().web_app_frame_toolbar, gfx::Rect(), false);
++  }
++  if (IsParentedTo(views().web_app_window_title, views().browser_view)) {
++    layout.AddChild(views().web_app_window_title, gfx::Rect(), false);
++  }
++  if (IsParentedTo(views().webui_tab_strip, views().browser_view)) {
++    layout.AddChild(views().webui_tab_strip, gfx::Rect(), false);
++  }
++  hide_browser_child(views().vertical_tab_strip_region_view);
++  hide_browser_child(views().projects_panel_container);
++  hide_browser_child(views().toolbar_height_side_panel);
++  hide_browser_child(views().contents_height_side_panel);
++  hide_browser_child(views().side_panel_animation_content);
++
++  if (IsParentedTo(views().main_background_region, views().browser_view)) {
++    layout.AddChild(views().main_background_region, bounds, false);
++  }
++  if (IsParentedTo(views().main_shadow_overlay, views().browser_view)) {
++    layout.AddChild(views().main_shadow_overlay, gfx::Rect(), false);
++  }
++
++  const HeliumNotchFullscreenMetrics metrics =
++      delegate().GetHeliumNotchFullscreenMetrics();
++  const int toolbar_height =
++      views().toolbar ? views().toolbar->GetPreferredSize().height() : 0;
++  const int tabstrip_height =
++      views().horizontal_tab_strip_region_view
++          ? views()
++                .horizontal_tab_strip_region_view->GetPreferredSize()
++                .height()
++          : 0;
++  const int top_strip_height = std::min(
++      bounds.height(),
++      std::max({kHeliumNotchFullscreenMinTopStripHeight,
++                metrics.top_strip_height, toolbar_height, tabstrip_height}));
++  const gfx::Rect top_container_bounds(bounds.x(), bounds.y(), bounds.width(),
++                                       top_strip_height);
++
++  auto segment_to_window = [&](gfx::Rect segment, bool left_segment) {
++    if (segment.IsEmpty()) {
++      const int half_width = bounds.width() / 2;
++      segment = left_segment
++                    ? gfx::Rect(0, 0, half_width, top_strip_height)
++                    : gfx::Rect(half_width, 0, bounds.width() - half_width,
++                                top_strip_height);
++    }
++    segment.set_y(0);
++    segment.set_height(top_strip_height);
++    segment.Offset(bounds.x(), bounds.y());
++    segment.Intersect(top_container_bounds);
++    return segment;
++  };
++
++  const gfx::Rect left_segment =
++      segment_to_window(metrics.top_left_area, /*left_segment=*/true);
++  const gfx::Rect right_segment =
++      segment_to_window(metrics.top_right_area, /*left_segment=*/false);
++
++  const TabStripType tab_strip_type = GetTabStripType();
++  const bool show_horizontal_tabs = delegate().ShouldLayoutTabStrip() &&
++                                    tab_strip_type == TabStripType::kHorizontal;
++
++  if (IsParentedTo(views().horizontal_tab_strip_region_view,
++                   views().browser_view)) {
++    gfx::Rect tabstrip_bounds;
++    if (show_horizontal_tabs) {
++      tabstrip_bounds = right_segment;
++    }
++    layout.AddChild(views().horizontal_tab_strip_region_view, tabstrip_bounds,
++                    show_horizontal_tabs && tabstrip_bounds.width() > 0);
++  }
++
++  if (IsParentedTo(views().top_container, views().browser_view)) {
++    auto& top_container_layout =
++        layout.AddChild(views().top_container, top_container_bounds, true);
++
++    hide_top_container_child(top_container_layout, views().webui_tab_strip,
++                             views().top_container);
++    hide_top_container_child(top_container_layout, views().bookmark_bar,
++                             views().top_container);
++    hide_top_container_child(top_container_layout, views().loading_bar,
++                             views().top_container);
++
++    if (IsParentedTo(views().toolbar, views().top_container)) {
++      gfx::Rect toolbar_bounds = left_segment;
++      toolbar_bounds.Offset(-top_container_bounds.x(),
++                            -top_container_bounds.y());
++      top_container_layout.AddChild(
++          views().toolbar, toolbar_bounds,
++          delegate().IsToolbarVisible() && toolbar_bounds.width() > 0);
++    }
++
++    if (IsParentedTo(views().horizontal_tab_strip_region_view,
++                     views().top_container)) {
++      gfx::Rect tabstrip_bounds;
++      if (show_horizontal_tabs) {
++        tabstrip_bounds = right_segment;
++        tabstrip_bounds.Offset(-top_container_bounds.x(),
++                               -top_container_bounds.y());
++      }
++      top_container_layout.AddChild(
++          views().horizontal_tab_strip_region_view, tabstrip_bounds,
++          show_horizontal_tabs && tabstrip_bounds.width() > 0);
++    }
++
++    if (IsParentedTo(views().top_container_separator, views().top_container)) {
++      const int separator_height =
++          views().top_container_separator->GetPreferredSize().height();
++      const gfx::Rect separator_bounds(
++          0, std::max(0, top_container_bounds.height() - separator_height),
++          top_container_bounds.width(), separator_height);
++      top_container_layout.AddChild(
++          views().top_container_separator, separator_bounds,
++          delegate().IsContentsSeparatorEnabled() && separator_height > 0);
++    }
++  }
++
++  if (IsParentedTo(views().top_container_separator, views().browser_view)) {
++    const int separator_height =
++        views().top_container_separator->GetPreferredSize().height();
++    const gfx::Rect separator_bounds(
++        bounds.x(),
++        std::max(bounds.y(), top_container_bounds.bottom() - separator_height),
++        bounds.width(), separator_height);
++    layout.AddChild(
++        views().top_container_separator, separator_bounds,
++        delegate().IsContentsSeparatorEnabled() && separator_height > 0);
++  }
++
++  int contents_top = top_container_bounds.bottom();
++  if (IsParentedTo(views().infobar_container, views().browser_view)) {
++    gfx::Rect infobar_bounds;
++    const bool infobar_visible = delegate().IsInfobarVisible();
++    if (infobar_visible) {
++      infobar_bounds =
++          gfx::Rect(bounds.x(), contents_top, bounds.width(),
++                    views().infobar_container->GetPreferredSize().height());
++      contents_top = infobar_bounds.bottom();
++    }
++    layout.AddChild(views().infobar_container, infobar_bounds, infobar_visible);
++  }
++
++  if (views().multi_contents_view) {
++    views().multi_contents_view->SetAttachedSideChromeVisibility(false, false);
++    views().multi_contents_view->SetShouldShowLeadingSeparator(false);
++    views().multi_contents_view->SetShouldShowTrailingSeparator(false);
++    views().multi_contents_view->SetShouldShowTopSeparator(false);
++    views().multi_contents_view->SetTargetContentBounds(std::nullopt);
++  }
++
++  if (IsParentedTo(views().contents_container, views().browser_view)) {
++    layout.AddChild(views().contents_container,
++                    gfx::Rect(bounds.x(), contents_top, bounds.width(),
++                              std::max(0, bounds.bottom() - contents_top)),
++                    true);
++  }
++
++  return layout;
++}
++#endif
++
+ BrowserViewTabbedLayoutImpl::TopSeparatorType
+ BrowserViewTabbedLayoutImpl::GetTopSeparatorType() const {
+   if (!delegate().IsToolbarVisible() && !delegate().IsBookmarkBarVisible()) {
+@@ -683,6 +875,12 @@ BrowserViewTabbedLayoutImpl::CalculatePr
+   TRACE_EVENT0("ui", "BrowserViewLayoutImpl::CalculateProposedLayout");
+   ProposedLayout layout;
+ 
++#if BUILDFLAG(IS_MAC)
++  if (delegate().IsHeliumNotchFullscreenActive()) {
++    return CalculateNotchFullscreenLayout(browser_params);
++  }
++#endif
++
+   // The window scrim covers the entire browser view.
+   if (views().window_scrim) {
+     layout.AddChild(views().window_scrim, browser_params.visual_client_area);
+Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.h
+===================================================================
+--- src.orig/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.h
++++ src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.h
+@@ -7,6 +7,7 @@
+ 
+ #include <utility>
+ 
++#include "build/build_config.h"
+ #include "chrome/browser/ui/animation/browser_animation_types.h"
+ #include "chrome/browser/ui/helium/helium_layout_state_controller.h"
+ #include "chrome/browser/ui/views/frame/layout/browser_view_layout.h"
+@@ -62,6 +63,11 @@ class BrowserViewTabbedLayoutImpl : publ
+   // height side panel.
+   gfx::Size GetMinimumMainAreaSize(const BrowserLayoutParams& params) const;
+ 
++#if BUILDFLAG(IS_MAC)
++  ProposedLayout CalculateNotchFullscreenLayout(
++      const BrowserLayoutParams& params) const;
++#endif
++
+   // Returns the size of the vertical and horizontal tabstrips, as a pair.
+   std::pair<gfx::Size, gfx::Size> GetMinimumTabStripSize(
+       const BrowserLayoutParams& params) const;
+Index: src/chrome/common/chrome_switches.cc
+===================================================================
+--- src.orig/chrome/common/chrome_switches.cc
++++ src/chrome/common/chrome_switches.cc
+@@ -346,6 +346,12 @@ const char kForceFirstRun[] = "force-fir
+ // showing the First Run experience).
+ const char kForceWhatsNew[] = "force-whats-new";
+ 
++#if BUILDFLAG(IS_MAC)
++// Enables Helium's borderless, notch-aware browser fullscreen on supported
++// MacBook displays.
++const char kHeliumNotchFullscreen[] = "helium-notch-fullscreen";
++#endif
++
+ // Does not show the crash restore bubble when the browser is started during the
+ // system startup phase in ChromeOS, if the ChromeOS full restore feature is
+ // enabled, because the ChromeOS full restore notification is shown for the user
+Index: src/chrome/common/chrome_switches.h
+===================================================================
+--- src.orig/chrome/common/chrome_switches.h
++++ src/chrome/common/chrome_switches.h
+@@ -122,6 +122,9 @@ extern const char kForceDevToolsAvailabl
+ extern const char kForceFirstRun[];
+ extern const char kRefreshPlatformPolicy[];
+ extern const char kForceWhatsNew[];
++#if BUILDFLAG(IS_MAC)
++extern const char kHeliumNotchFullscreen[];
++#endif
+ extern const char kHideCrashRestoreBubble[];
+ extern const char kHomePage[];
+ #if !BUILDFLAG(IS_ANDROID)
