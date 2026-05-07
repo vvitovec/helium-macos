@@ -709,13 +709,13 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.
  constexpr int kTopToolbarExclusion = 10;
  
 +#if BUILDFLAG(IS_MAC)
-+constexpr int kHeliumNotchFullscreenMinTopStripHeight = 44;
++constexpr int kHeliumNotchFullscreenMinTopStripHeight = 1;
 +#endif
 +
  int ScaleExtent(int extent, float ratio) {
    return base::ClampRound(std::max(0, extent) * ratio);
  }
-@@ -149,6 +154,188 @@ BrowserViewTabbedLayoutImpl::BrowserView
+@@ -149,6 +154,174 @@ BrowserViewTabbedLayoutImpl::BrowserView
  
  BrowserViewTabbedLayoutImpl::~BrowserViewTabbedLayoutImpl() = default;
  
@@ -768,10 +768,10 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.
 +
 +  const HeliumNotchFullscreenMetrics metrics =
 +      delegate().GetHeliumNotchFullscreenMetrics();
-+  const int chrome_row_height = kHeliumNotchFullscreenMinTopStripHeight;
 +  const int top_strip_height = std::min(
-+      bounds.height(), std::max({kHeliumNotchFullscreenMinTopStripHeight,
-+                                 metrics.top_strip_height}));
++      bounds.height(), std::max(kHeliumNotchFullscreenMinTopStripHeight,
++                                metrics.top_strip_height));
++  const int chrome_row_height = top_strip_height;
 +  const gfx::Rect top_container_bounds(bounds.x(), bounds.y(), bounds.width(),
 +                                       top_strip_height);
 +
@@ -846,27 +846,13 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.
 +    }
 +
 +    if (IsParentedTo(views().top_container_separator, views().top_container)) {
-+      const int separator_height =
-+          views().top_container_separator->GetPreferredSize().height();
-+      const gfx::Rect separator_bounds(
-+          0, std::max(0, top_container_bounds.height() - separator_height),
-+          top_container_bounds.width(), separator_height);
-+      top_container_layout.AddChild(
-+          views().top_container_separator, separator_bounds,
-+          delegate().IsContentsSeparatorEnabled() && separator_height > 0);
++      top_container_layout.AddChild(views().top_container_separator,
++                                    gfx::Rect(), false);
 +    }
 +  }
 +
 +  if (IsParentedTo(views().top_container_separator, views().browser_view)) {
-+    const int separator_height =
-+        views().top_container_separator->GetPreferredSize().height();
-+    const gfx::Rect separator_bounds(
-+        bounds.x(),
-+        std::max(bounds.y(), top_container_bounds.bottom() - separator_height),
-+        bounds.width(), separator_height);
-+    layout.AddChild(
-+        views().top_container_separator, separator_bounds,
-+        delegate().IsContentsSeparatorEnabled() && separator_height > 0);
++    layout.AddChild(views().top_container_separator, gfx::Rect(), false);
 +  }
 +
 +  int contents_top = top_container_bounds.bottom();
@@ -904,7 +890,7 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.
  BrowserViewTabbedLayoutImpl::TopSeparatorType
  BrowserViewTabbedLayoutImpl::GetTopSeparatorType() const {
    if (!delegate().IsToolbarVisible() && !delegate().IsBookmarkBarVisible()) {
-@@ -683,6 +870,12 @@ BrowserViewTabbedLayoutImpl::CalculatePr
+@@ -683,6 +856,12 @@ BrowserViewTabbedLayoutImpl::CalculatePr
    TRACE_EVENT0("ui", "BrowserViewLayoutImpl::CalculateProposedLayout");
    ProposedLayout layout;
  
