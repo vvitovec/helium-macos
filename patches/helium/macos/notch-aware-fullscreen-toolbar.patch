@@ -27,6 +27,16 @@ Index: src/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
    if (GetBrowserView()->UsesImmersiveFullscreenMode()) {
      ImmersiveModeController::From(GetBrowserView()->browser())
          ->SetEnabled(GetBrowserView()->IsFullscreen());
+@@ -327,6 +332,9 @@ views::LayoutAlignment BrowserFrameViewM
+ }
+ 
+ gfx::RoundedCornersF BrowserFrameViewMac::GetWindowRoundedCorners() const {
++  if (GetBrowserView()->IsHeliumNotchFullscreenActive()) {
++    return gfx::RoundedCornersF();
++  }
+   if (auto* const widget = GetWidget();
+       widget && !widget->IsFullscreen() && !widget->IsMaximized()) {
+     return gfx::RoundedCornersF(
 Index: src/chrome/browser/ui/views/frame/browser_view.cc
 ===================================================================
 --- src.orig/chrome/browser/ui/views/frame/browser_view.cc
@@ -101,14 +111,16 @@ Index: src/chrome/browser/ui/views/frame/browser_view.cc
    // Immersive full screen makes it possible to display the toolbar when
    // kShowFullscreenToolbar is not set.
    if (!UsesImmersiveFullscreenMode()) {
-@@ -4816,6 +4844,16 @@ void BrowserView::OnWidgetActivationChan
+@@ -4816,6 +4844,18 @@ void BrowserView::OnWidgetActivationChan
  
  void BrowserView::OnWidgetBoundsChanged(views::Widget* widget,
                                          const gfx::Rect& new_bounds) {
 +#if BUILDFLAG(IS_MAC)
 +  if (helium_notch_fullscreen_controller_ &&
 +      helium_notch_fullscreen_controller_->IsActive() &&
-+      !helium_notch_fullscreen_controller_->CanUseNotchFullscreen()) {
++      (!helium_notch_fullscreen_controller_->CanUseNotchFullscreen() ||
++       !helium_notch_fullscreen_controller_
++            ->IsWindowOnExpectedFullscreenFrame())) {
 +    helium_notch_fullscreen_controller_->Exit();
 +    FullscreenStateChanged();
 +    DeprecatedLayoutImmediately();
@@ -118,7 +130,7 @@ Index: src/chrome/browser/ui/views/frame/browser_view.cc
    TryNotifyWindowBoundsChanged(new_bounds);
  }
  
-@@ -5357,6 +5395,17 @@ int BrowserView::NonClientHitTest(const
+@@ -5357,6 +5397,17 @@ int BrowserView::NonClientHitTest(const
    views::View::ConvertPointToTarget(parent(), this,
                                      &point_in_browser_view_coords);
  
@@ -136,7 +148,7 @@ Index: src/chrome/browser/ui/views/frame/browser_view.cc
    // Check if the point is in the web_app_frame_toolbar_. Because this toolbar
    // can entirely be within the window controls overlay area, this check needs
    // to be done before the window controls overlay area check below.
-@@ -6245,16 +6294,31 @@ void BrowserView::ProcessFullscreen(bool
+@@ -6245,16 +6296,31 @@ void BrowserView::ProcessFullscreen(bool
  
    PrepareFullscreen(fullscreen);
  
@@ -170,7 +182,7 @@ Index: src/chrome/browser/ui/views/frame/browser_view.cc
  
    // Undo our anti-jankiness hacks and force a re-layout.
    in_process_fullscreen_ = false;
-@@ -6268,6 +6332,43 @@ void BrowserView::ProcessFullscreen(bool
+@@ -6268,6 +6334,43 @@ void BrowserView::ProcessFullscreen(bool
    }
  }
  
@@ -267,7 +279,7 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 ===================================================================
 --- /dev/null
 +++ src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.h
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,73 @@
 +// Copyright 2026 The Helium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -291,6 +303,13 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +  int top_strip_height = 0;
 +};
 +
++struct HeliumNotchFullscreenLayoutMetrics {
++  int top_strip_height = 0;
++  int contents_top = 0;
++  gfx::Rect toolbar_bounds;
++  gfx::Rect tabstrip_bounds;
++};
++
 +// Testable geometry helper. All rectangles are in screen-local DIP coordinates
 +// with a top-left origin, matching Views layout coordinates.
 +HeliumNotchFullscreenMetrics CalculateHeliumNotchFullscreenMetrics(
@@ -298,6 +317,12 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +    const gfx::Rect& top_left_area,
 +    const gfx::Rect& top_right_area,
 +    int safe_area_top);
++
++HeliumNotchFullscreenLayoutMetrics CalculateHeliumNotchFullscreenLayoutMetrics(
++    const gfx::Rect& bounds,
++    const HeliumNotchFullscreenMetrics& metrics,
++    int toolbar_height,
++    int tabstrip_height);
 +
 +// Controls Helium's custom macOS notch fullscreen mode. This class
 +// intentionally uses only public AppKit APIs and never enters native macOS
@@ -313,6 +338,7 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +
 +  bool IsActive() const;
 +  bool CanUseNotchFullscreen() const;
++  bool IsWindowOnExpectedFullscreenFrame() const;
 +  void Enter();
 +  void Exit();
 +  HeliumNotchFullscreenMetrics GetMetrics() const;
@@ -323,6 +349,7 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +  raw_ptr<BrowserView> browser_view_;
 +  std::unique_ptr<SavedState> saved_state_;
 +  bool active_ = false;
++  bool changing_window_state_ = false;
 +};
 +
 +#endif  // CHROME_BROWSER_UI_VIEWS_FRAME_HELIUM_NOTCH_FULLSCREEN_CONTROLLER_MAC_H_
@@ -330,7 +357,7 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 ===================================================================
 --- /dev/null
 +++ src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.mm
-@@ -0,0 +1,271 @@
+@@ -0,0 +1,365 @@
 +// Copyright 2026 The Helium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -338,6 +365,7 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +#include "chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.h"
 +
 +#include <AppKit/AppKit.h>
++#include <dispatch/dispatch.h>
 +
 +#include <algorithm>
 +#include <array>
@@ -352,8 +380,26 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +
 +namespace {
 +
++constexpr std::array<NSWindowButton, 3> kStandardWindowButtons = {
++    NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton};
++
++constexpr int kNotchFullscreenFallbackTopStripHeight = 28;
++
 +int RoundCGFloat(CGFloat value) {
 +  return static_cast<int>(std::round(value));
++}
++
++bool NSRectsNearlyEqual(NSRect lhs, NSRect rhs) {
++  constexpr CGFloat kTolerance = 1.0;
++  return std::abs(NSMinX(lhs) - NSMinX(rhs)) <= kTolerance &&
++         std::abs(NSMinY(lhs) - NSMinY(rhs)) <= kTolerance &&
++         std::abs(NSWidth(lhs) - NSWidth(rhs)) <= kTolerance &&
++         std::abs(NSHeight(lhs) - NSHeight(rhs)) <= kTolerance;
++}
++
++bool IsUsableWindowButtonFrame(NSRect frame) {
++  return NSMinX(frame) >= 0 && NSMinY(frame) >= 0 && NSWidth(frame) > 0 &&
++         NSHeight(frame) > 0;
 +}
 +
 +gfx::Rect ScreenLocalRectFromNSRect(NSRect screen_frame, NSRect rect) {
@@ -389,6 +435,22 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +  return host ? host->GetNSWindowMojo() : nullptr;
 +}
 +
++void RestoreStandardWindowButtons(NSWindow* window,
++                                  const std::array<NSRect, 3>& frames,
++                                  const std::array<CGFloat, 3>& alpha) {
++  for (size_t i = 0; i < kStandardWindowButtons.size(); ++i) {
++    if (NSButton* button =
++            [window standardWindowButton:kStandardWindowButtons[i]]) {
++      if (IsUsableWindowButtonFrame(frames[i])) {
++        [button setFrame:frames[i]];
++      }
++      [button setHidden:NO];
++      [button setEnabled:YES];
++      [button setAlphaValue:std::max<CGFloat>(1.0, alpha[i])];
++    }
++  }
++}
++
 +HeliumNotchFullscreenMetrics GetScreenMetrics(NSScreen* screen) {
 +  if (!screen) {
 +    return {};
@@ -420,6 +482,7 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +  NSRect content_view_frame = NSZeroRect;
 +  NSUInteger content_view_autoresizing_mask = 0;
 +  int titlebar_height = 0;
++  std::array<NSRect, 3> standard_button_frame = {};
 +  std::array<BOOL, 3> standard_button_hidden = {};
 +  std::array<BOOL, 3> standard_button_enabled = {};
 +  std::array<CGFloat, 3> standard_button_alpha = {};
@@ -460,6 +523,49 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +  return metrics;
 +}
 +
++HeliumNotchFullscreenLayoutMetrics CalculateHeliumNotchFullscreenLayoutMetrics(
++    const gfx::Rect& bounds,
++    const HeliumNotchFullscreenMetrics& metrics,
++    int toolbar_height,
++    int tabstrip_height) {
++  HeliumNotchFullscreenLayoutMetrics layout;
++  layout.top_strip_height = std::min(
++      bounds.height(), std::max(metrics.top_strip_height,
++                                kNotchFullscreenFallbackTopStripHeight));
++  layout.contents_top = bounds.y() + layout.top_strip_height;
++
++  auto segment_to_window = [&](gfx::Rect segment, bool left_segment,
++                               int child_height, bool bottom_align_overflow) {
++    if (segment.IsEmpty()) {
++      const int half_width = bounds.width() / 2;
++      segment = left_segment
++                    ? gfx::Rect(0, 0, half_width, layout.top_strip_height)
++                    : gfx::Rect(half_width, 0, bounds.width() - half_width,
++                                layout.top_strip_height);
++    }
++    child_height = std::max(child_height, layout.top_strip_height);
++    const int overflow = child_height - layout.top_strip_height;
++    const int child_y =
++        bounds.y() -
++        (bottom_align_overflow ? overflow : std::max(0, overflow / 2));
++    segment.set_y(child_y);
++    segment.set_height(child_height);
++    segment.Offset(bounds.x(), 0);
++    const int segment_right = std::min(segment.right(), bounds.right());
++    segment.set_x(std::max(segment.x(), bounds.x()));
++    segment.set_width(std::max(0, segment_right - segment.x()));
++    return segment;
++  };
++
++  layout.toolbar_bounds =
++      segment_to_window(metrics.top_left_area, /*left_segment=*/true,
++                        toolbar_height, /*bottom_align_overflow=*/false);
++  layout.tabstrip_bounds =
++      segment_to_window(metrics.top_right_area, /*left_segment=*/false,
++                        tabstrip_height, /*bottom_align_overflow=*/true);
++  return layout;
++}
++
 +HeliumNotchFullscreenControllerMac::HeliumNotchFullscreenControllerMac(
 +    BrowserView* browser_view)
 +    : browser_view_(browser_view) {}
@@ -475,6 +581,16 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +bool HeliumNotchFullscreenControllerMac::CanUseNotchFullscreen() const {
 +  NSWindow* window = GetWindow(browser_view_);
 +  return GetScreenMetrics([window screen]).has_notch;
++}
++
++bool HeliumNotchFullscreenControllerMac::IsWindowOnExpectedFullscreenFrame()
++    const {
++  if (changing_window_state_) {
++    return true;
++  }
++  NSWindow* window = GetWindow(browser_view_);
++  NSScreen* screen = [window screen];
++  return window && screen && NSRectsNearlyEqual([window frame], [screen frame]);
 +}
 +
 +void HeliumNotchFullscreenControllerMac::Enter() {
@@ -508,10 +624,10 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +    saved_state->content_view_autoresizing_mask =
 +        [content_view autoresizingMask];
 +  }
-+  const std::array<NSWindowButton, 3> standard_buttons = {
-+      NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton};
-+  for (size_t i = 0; i < standard_buttons.size(); ++i) {
-+    if (NSButton* button = [window standardWindowButton:standard_buttons[i]]) {
++  for (size_t i = 0; i < kStandardWindowButtons.size(); ++i) {
++    if (NSButton* button =
++            [window standardWindowButton:kStandardWindowButtons[i]]) {
++      saved_state->standard_button_frame[i] = [button frame];
 +      saved_state->standard_button_hidden[i] = [button isHidden];
 +      saved_state->standard_button_enabled[i] = [button isEnabled];
 +      saved_state->standard_button_alpha[i] = [button alphaValue];
@@ -520,6 +636,7 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +
 +  saved_state_ = std::move(saved_state);
 +  active_ = true;
++  changing_window_state_ = true;
 +
 +  [NSApp setPresentationOptions:saved_state_->presentation_options |
 +                                NSApplicationPresentationAutoHideDock |
@@ -534,7 +651,7 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +                                                  NSHeight([window frame]))];
 +    [content_view setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
 +  }
-+  for (NSWindowButton standard_button : standard_buttons) {
++  for (NSWindowButton standard_button : kStandardWindowButtons) {
 +    if (NSButton* button = [window standardWindowButton:standard_button]) {
 +      [button setHidden:YES];
 +      [button setEnabled:NO];
@@ -554,6 +671,7 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +    ns_window_mojo->SetWindowButtonsHidden(true);
 +  }
 +  [window makeKeyAndOrderFront:nil];
++  changing_window_state_ = false;
 +}
 +
 +void HeliumNotchFullscreenControllerMac::Exit() {
@@ -564,11 +682,10 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +  NSWindow* window = GetWindow(browser_view_);
 +  if (saved_state_) {
 +    auto saved_state = std::move(saved_state_);
++    changing_window_state_ = true;
 +    active_ = false;
 +    [NSApp setPresentationOptions:saved_state->presentation_options];
 +    if (window) {
-+      const std::array<NSWindowButton, 3> standard_buttons = {
-+          NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton};
 +      [window setStyleMask:saved_state->style_mask];
 +      [window setCollectionBehavior:saved_state->collection_behavior];
 +      [window setFrame:saved_state->frame display:YES animate:NO];
@@ -577,21 +694,25 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +        [content_view
 +            setAutoresizingMask:saved_state->content_view_autoresizing_mask];
 +      }
-+      for (size_t i = 0; i < standard_buttons.size(); ++i) {
-+        if (NSButton* button =
-+                [window standardWindowButton:standard_buttons[i]]) {
-+          [button setHidden:saved_state->standard_button_hidden[i]];
-+          [button setEnabled:saved_state->standard_button_enabled[i]];
-+          [button setAlphaValue:saved_state->standard_button_alpha[i]];
-+        }
-+      }
++      RestoreStandardWindowButtons(window, saved_state->standard_button_frame,
++                                   saved_state->standard_button_alpha);
++      const std::array<NSRect, 3> button_frame =
++          saved_state->standard_button_frame;
++      const std::array<CGFloat, 3> button_alpha =
++          saved_state->standard_button_alpha;
++      NSWindow* restore_window = window;
++      dispatch_async(dispatch_get_main_queue(), ^{
++        RestoreStandardWindowButtons(restore_window, button_frame,
++                                     button_alpha);
++      });
 +    }
 +    if (auto* ns_window_mojo = GetNSWindowMojo(browser_view_)) {
-+      ns_window_mojo->SetWindowButtonsHidden(false);
 +      ns_window_mojo->SetStyleMask(saved_state->style_mask);
 +      ns_window_mojo->SetContentViewFrame(
 +          GfxRectFromNSRect(saved_state->content_view_frame));
++      ns_window_mojo->SetWindowButtonsHidden(false);
 +    }
++    changing_window_state_ = false;
 +  }
 +}
 +
@@ -704,18 +825,7 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.
  #include "ui/gfx/geometry/outsets.h"
  #include "ui/gfx/geometry/size.h"
  #include "ui/views/controls/separator.h"
-@@ -62,6 +63,10 @@ constexpr int kVerticalTabsGrabHandleSiz
- // against the frame controls when it is the top-most row.
- constexpr int kTopToolbarExclusion = 10;
- 
-+#if BUILDFLAG(IS_MAC)
-+constexpr int kHeliumNotchFullscreenMinTopStripHeight = 1;
-+#endif
-+
- int ScaleExtent(int extent, float ratio) {
-   return base::ClampRound(std::max(0, extent) * ratio);
- }
-@@ -149,6 +154,174 @@ BrowserViewTabbedLayoutImpl::BrowserView
+@@ -149,6 +150,161 @@ BrowserViewTabbedLayoutImpl::BrowserView
  
  BrowserViewTabbedLayoutImpl::~BrowserViewTabbedLayoutImpl() = default;
  
@@ -768,43 +878,32 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.
 +
 +  const HeliumNotchFullscreenMetrics metrics =
 +      delegate().GetHeliumNotchFullscreenMetrics();
-+  const int top_strip_height = std::min(
-+      bounds.height(), std::max(kHeliumNotchFullscreenMinTopStripHeight,
-+                                metrics.top_strip_height));
-+  const int chrome_row_height = top_strip_height;
-+  const gfx::Rect top_container_bounds(bounds.x(), bounds.y(), bounds.width(),
-+                                       top_strip_height);
-+
-+  auto segment_to_window = [&](gfx::Rect segment, bool left_segment) {
-+    if (segment.IsEmpty()) {
-+      const int half_width = bounds.width() / 2;
-+      segment = left_segment
-+                    ? gfx::Rect(0, 0, half_width, top_strip_height)
-+                    : gfx::Rect(half_width, 0, bounds.width() - half_width,
-+                                top_strip_height);
-+    }
-+    segment.set_y(0);
-+    segment.set_height(top_strip_height);
-+    segment.Offset(bounds.x(), bounds.y());
-+    segment.Intersect(top_container_bounds);
-+    return segment;
-+  };
-+
-+  const gfx::Rect left_segment =
-+      segment_to_window(metrics.top_left_area, /*left_segment=*/true);
-+  const gfx::Rect right_segment =
-+      segment_to_window(metrics.top_right_area, /*left_segment=*/false);
-+
 +  const TabStripType tab_strip_type = GetTabStripType();
 +  const bool show_horizontal_tabs = delegate().ShouldLayoutTabStrip() &&
 +                                    tab_strip_type == TabStripType::kHorizontal;
++  const int toolbar_height =
++      views().toolbar
++          ? std::max(views().toolbar->GetPreferredSize().height(),
++                     GetLayoutConstant(LayoutConstant::kToolbarButtonHeight))
++          : GetLayoutConstant(LayoutConstant::kToolbarButtonHeight);
++  const int tabstrip_height =
++      show_horizontal_tabs && views().horizontal_tab_strip_region_view
++          ? std::max(views()
++                         .horizontal_tab_strip_region_view->GetPreferredSize()
++                         .height(),
++                     GetLayoutConstant(LayoutConstant::kTabHeight))
++          : GetLayoutConstant(LayoutConstant::kTabHeight);
++  const HeliumNotchFullscreenLayoutMetrics notch_layout =
++      CalculateHeliumNotchFullscreenLayoutMetrics(
++          bounds, metrics, toolbar_height, tabstrip_height);
++  const gfx::Rect top_container_bounds(bounds.x(), bounds.y(), bounds.width(),
++                                       notch_layout.top_strip_height);
 +
 +  if (IsParentedTo(views().horizontal_tab_strip_region_view,
 +                   views().browser_view)) {
 +    gfx::Rect tabstrip_bounds;
 +    if (show_horizontal_tabs) {
-+      tabstrip_bounds = right_segment;
-+      tabstrip_bounds.set_height(chrome_row_height);
++      tabstrip_bounds = notch_layout.tabstrip_bounds;
 +    }
 +    layout.AddChild(views().horizontal_tab_strip_region_view, tabstrip_bounds,
 +                    show_horizontal_tabs && tabstrip_bounds.width() > 0);
@@ -822,8 +921,7 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.
 +                             views().top_container);
 +
 +    if (IsParentedTo(views().toolbar, views().top_container)) {
-+      gfx::Rect toolbar_bounds = left_segment;
-+      toolbar_bounds.set_height(chrome_row_height);
++      gfx::Rect toolbar_bounds = notch_layout.toolbar_bounds;
 +      toolbar_bounds.Offset(-top_container_bounds.x(),
 +                            -top_container_bounds.y());
 +      top_container_layout.AddChild(
@@ -835,8 +933,7 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.
 +                     views().top_container)) {
 +      gfx::Rect tabstrip_bounds;
 +      if (show_horizontal_tabs) {
-+        tabstrip_bounds = right_segment;
-+        tabstrip_bounds.set_height(chrome_row_height);
++        tabstrip_bounds = notch_layout.tabstrip_bounds;
 +        tabstrip_bounds.Offset(-top_container_bounds.x(),
 +                               -top_container_bounds.y());
 +      }
@@ -855,7 +952,7 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.
 +    layout.AddChild(views().top_container_separator, gfx::Rect(), false);
 +  }
 +
-+  int contents_top = top_container_bounds.bottom();
++  int contents_top = notch_layout.contents_top;
 +  if (IsParentedTo(views().infobar_container, views().browser_view)) {
 +    gfx::Rect infobar_bounds;
 +    const bool infobar_visible = delegate().IsInfobarVisible();
@@ -890,7 +987,7 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.
  BrowserViewTabbedLayoutImpl::TopSeparatorType
  BrowserViewTabbedLayoutImpl::GetTopSeparatorType() const {
    if (!delegate().IsToolbarVisible() && !delegate().IsBookmarkBarVisible()) {
-@@ -683,6 +856,12 @@ BrowserViewTabbedLayoutImpl::CalculatePr
+@@ -683,6 +839,12 @@ BrowserViewTabbedLayoutImpl::CalculatePr
    TRACE_EVENT0("ui", "BrowserViewLayoutImpl::CalculateProposedLayout");
    ProposedLayout layout;
  
@@ -1045,7 +1142,19 @@ Index: src/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
    auto* window = base::apple::ObjCCast<NativeWidgetMacNSWindow>(self.window);
    remote_cocoa::NativeWidgetNSWindowBridge* bridge = window.bridge;
    if (!bridge) {
-@@ -98,6 +102,16 @@ const double kThinControllerHeight = 0.5
+@@ -74,6 +78,11 @@ const double kThinControllerHeight = 0.5
+ // methods (-_topCornerSize, -_bottomCornerSize) also depend on
+ // _getCachedWindowCornerRadius.
+ - (CGFloat)_getCachedWindowCornerRadius {
++  auto* window = base::apple::ObjCCast<NativeWidgetMacNSWindow>(self.window);
++  remote_cocoa::NativeWidgetNSWindowBridge* bridge = window.bridge;
++  if (bridge && bridge->ShouldForceSquareWindowCorners()) {
++    return 0.0;
++  }
+   if (@available(macOS 26, *)) {
+     return 10.0 /* widget position from top and left */ +
+            7.0 /* widget radius */;
+@@ -98,6 +107,16 @@ const double kThinControllerHeight = 0.5
    // adjusting the visibility of the traffic lights. The layout changes are
    // desired and should be left intact.
    [super setButtonRevealAmount:amount];
@@ -1054,15 +1163,15 @@ Index: src/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
 +         {NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton}) {
 +      NSButton* button_view = [self.window standardWindowButton:button];
 +      [button_view setHidden:YES];
++      [button_view setEnabled:NO];
 +      [button_view setAlphaValue:0.0];
-+      [button_view setFrameOrigin:NSMakePoint(-1000.0, -1000.0)];
 +    }
 +    return;
 +  }
    if (amount == 1.0) {
      return;
    }
-@@ -111,6 +125,9 @@ const double kThinControllerHeight = 0.5
+@@ -111,13 +130,20 @@ const double kThinControllerHeight = 0.5
  }
  
  - (void)maybeShowTrafficLights {
@@ -1072,7 +1181,21 @@ Index: src/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
    if (!_alwaysShowTrafficLights) {
      return;
    }
-@@ -164,6 +181,20 @@ const double kThinControllerHeight = 0.5
+   NSWindow* window = [self window];
+-  [[window standardWindowButton:NSWindowCloseButton] setAlphaValue:1.0];
+-  [[window standardWindowButton:NSWindowMiniaturizeButton] setAlphaValue:1.0];
+-  [[window standardWindowButton:NSWindowZoomButton] setAlphaValue:1.0];
++  for (NSWindowButton button :
++       {NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton}) {
++    NSButton* button_view = [window standardWindowButton:button];
++    [button_view setHidden:NO];
++    [button_view setEnabled:YES];
++    [button_view setAlphaValue:1.0];
++  }
+ }
+ 
+ @end
+@@ -164,6 +190,20 @@ const double kThinControllerHeight = 0.5
    return self;
  }
  
@@ -1093,7 +1216,7 @@ Index: src/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
  - (void)dealloc {
    [NSNotificationCenter.defaultCenter removeObserver:self];
  }
-@@ -195,6 +226,16 @@ const double kThinControllerHeight = 0.5
+@@ -195,6 +235,16 @@ const double kThinControllerHeight = 0.5
      bridge->host()->OnFocusWindowToolbar();
  }
  
@@ -1122,7 +1245,17 @@ Index: src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h
  #include <memory>
  #include <optional>
  #include <vector>
-@@ -217,6 +218,9 @@ class REMOTE_COCOA_APP_SHIM_EXPORT Nativ
+@@ -194,6 +195,9 @@ class REMOTE_COCOA_APP_SHIM_EXPORT Nativ
+     return text_input_host_;
+   }
+   NativeWidgetMacNSWindow* ns_window();
++  bool ShouldForceSquareWindowCorners() const {
++    return force_square_window_corners_;
++  }
+ 
+   remote_cocoa::DragDropClient* drag_drop_client();
+   bool is_translucent_window() const { return is_translucent_window_; }
+@@ -217,6 +221,9 @@ class REMOTE_COCOA_APP_SHIM_EXPORT Nativ
    bool in_fullscreen_transition() const {
      return fullscreen_controller_.IsInFullscreenTransition();
    }
@@ -1132,7 +1265,7 @@ Index: src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h
  
    bool CanGoBack() const { return can_go_back_; }
    bool CanGoForward() const { return can_go_forward_; }
-@@ -285,6 +289,10 @@ class REMOTE_COCOA_APP_SHIM_EXPORT Nativ
+@@ -285,6 +292,10 @@ class REMOTE_COCOA_APP_SHIM_EXPORT Nativ
    void SetVisibilityState(
        remote_cocoa::mojom::WindowVisibilityState new_state) override;
    void SetAnimationEnabled(bool animation_enabled) override;
@@ -1143,7 +1276,7 @@ Index: src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h
    void SetTransitionsToAnimate(
        remote_cocoa::mojom::VisibilityTransition transitions) override;
    void SetVisibleOnAllSpaces(bool always_visible) override;
-@@ -463,6 +471,16 @@ class REMOTE_COCOA_APP_SHIM_EXPORT Nativ
+@@ -463,6 +474,31 @@ class REMOTE_COCOA_APP_SHIM_EXPORT Nativ
    // Manager of fullscreen state transitions.
    NativeWidgetNSWindowFullscreenController fullscreen_controller_{this};
  
@@ -1156,6 +1289,21 @@ Index: src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h
 +    std::array<NSRect, 3> frame = {};
 +  };
 +  std::optional<WindowButtonState> saved_window_button_state_;
++
++  struct ViewCornerState {
++    CGFloat corner_radius = 0;
++    BOOL masks_to_bounds = NO;
++    BOOL wants_layer = NO;
++  };
++
++  struct ContentViewCornerState {
++    ViewCornerState bridged_view;
++    ViewCornerState frame_view;
++    BOOL window_opaque = NO;
++    BOOL window_has_shadow = NO;
++  };
++  std::optional<ContentViewCornerState> saved_content_view_corner_state_;
++  bool force_square_window_corners_ = false;
 +
    // Stores the value last read from -[NSWindow isVisible], to detect visibility
    // changes.
@@ -1172,7 +1320,19 @@ Index: src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.mm
  #include "base/command_line.h"
  #include "base/functional/bind.h"
  #include "base/logging.h"
-@@ -1536,6 +1537,78 @@ void NativeWidgetNSWindowBridge::SetAnim
+@@ -83,6 +84,11 @@ CG_EXTERN CGRegionRef CGRegionCreateWith
+ namespace {
+ constexpr auto kUIPaintTimeout = base::Milliseconds(500);
+ 
++bool IsUsableWindowButtonFrame(NSRect frame) {
++  return NSMinX(frame) >= 0 && NSMinY(frame) >= 0 && NSWidth(frame) > 0 &&
++         NSHeight(frame) > 0;
++}
++
+ // Returns the display that the specified window is on.
+ display::Display GetDisplayForWindow(NSWindow* window) {
+   return display::Screen::Get()->GetDisplayNearestWindow(
+@@ -1536,6 +1542,151 @@ void NativeWidgetNSWindowBridge::SetAnim
                                      : NSWindowAnimationBehaviorNone)];
  }
  
@@ -1200,6 +1360,57 @@ Index: src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.mm
 +void NativeWidgetNSWindowBridge::SetWindowButtonsHidden(bool hidden) {
 +  static constexpr std::array<NSWindowButton, 3> kButtons = {
 +      NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton};
++  auto save_corner_state = [](NSView* view) {
++    ViewCornerState state;
++    state.wants_layer = [view wantsLayer];
++    if (CALayer* layer = [view layer]) {
++      state.corner_radius = [layer cornerRadius];
++      state.masks_to_bounds = [layer masksToBounds];
++    }
++    return state;
++  };
++  auto force_square_corners = [](NSView* view) {
++    if (!view) {
++      return;
++    }
++    [view setWantsLayer:YES];
++    view.layer.cornerRadius = 0;
++    view.layer.masksToBounds = NO;
++  };
++  auto restore_corner_state = [](NSView* view, const ViewCornerState& state) {
++    if (!view) {
++      return;
++    }
++    [view setWantsLayer:YES];
++    view.layer.cornerRadius = state.corner_radius;
++    view.layer.masksToBounds = state.masks_to_bounds;
++    [view setWantsLayer:state.wants_layer];
++  };
++
++  force_square_window_corners_ = hidden;
++  if (bridged_view_) {
++    NSView* frame_view = [bridged_view_ superview];
++    if (hidden) {
++      if (!saved_content_view_corner_state_) {
++        saved_content_view_corner_state_ = ContentViewCornerState{
++            save_corner_state(bridged_view_), save_corner_state(frame_view),
++            [window_ isOpaque], [window_ hasShadow]};
++      }
++      [window_ setOpaque:YES];
++      [window_ setHasShadow:NO];
++      force_square_corners(frame_view);
++      force_square_corners(bridged_view_);
++    } else if (saved_content_view_corner_state_) {
++      [window_ setOpaque:saved_content_view_corner_state_->window_opaque];
++      [window_
++          setHasShadow:saved_content_view_corner_state_->window_has_shadow];
++      restore_corner_state(frame_view,
++                           saved_content_view_corner_state_->frame_view);
++      restore_corner_state(bridged_view_,
++                           saved_content_view_corner_state_->bridged_view);
++      saved_content_view_corner_state_.reset();
++    }
++  }
 +
 +  if (hidden && !saved_window_button_state_) {
 +    WindowButtonState state;
@@ -1220,17 +1431,40 @@ Index: src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.mm
 +        [button setHidden:YES];
 +        [button setEnabled:NO];
 +        [button setAlphaValue:0.0];
-+        [button setFrameOrigin:NSMakePoint(-1000.0, -1000.0)];
 +      } else if (saved_window_button_state_) {
-+        [button setFrame:saved_window_button_state_->frame[i]];
-+        [button setHidden:saved_window_button_state_->hidden[i]];
-+        [button setEnabled:saved_window_button_state_->enabled[i]];
-+        [button setAlphaValue:saved_window_button_state_->alpha[i]];
++        if (IsUsableWindowButtonFrame(saved_window_button_state_->frame[i])) {
++          [button setFrame:saved_window_button_state_->frame[i]];
++        }
++        [button setHidden:NO];
++        [button setEnabled:YES];
++        [button setAlphaValue:1.0];
++      } else {
++        [button setHidden:NO];
++        [button setEnabled:YES];
++        [button setAlphaValue:1.0];
 +      }
 +    }
 +  }
 +
 +  if (!hidden) {
++    const std::optional<WindowButtonState> restored_state =
++        saved_window_button_state_;
++    if (restored_state) {
++      NativeWidgetMacNSWindow* window = window_;
++      const WindowButtonState state = *restored_state;
++      dispatch_async(dispatch_get_main_queue(), ^{
++        for (size_t i = 0; i < kButtons.size(); ++i) {
++          if (NSButton* button = [window standardWindowButton:kButtons[i]]) {
++            if (IsUsableWindowButtonFrame(state.frame[i])) {
++              [button setFrame:state.frame[i]];
++            }
++            [button setHidden:NO];
++            [button setEnabled:YES];
++            [button setAlphaValue:1.0];
++          }
++        }
++      });
++    }
 +    saved_window_button_state_.reset();
 +    return;
 +  }
@@ -1243,7 +1477,6 @@ Index: src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.mm
 +      [button_view setHidden:YES];
 +      [button_view setEnabled:NO];
 +      [button_view setAlphaValue:0.0];
-+      [button_view setFrameOrigin:NSMakePoint(-1000.0, -1000.0)];
 +    }
 +  });
 +}
@@ -1251,7 +1484,7 @@ Index: src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.mm
  bool NativeWidgetNSWindowBridge::ShouldRunCustomAnimationFor(
      VisibilityTransition transition) const {
    // The logic around this needs to change if new transition types are set.
-@@ -1649,6 +1722,8 @@ void NativeWidgetNSWindowBridge::Fullscr
+@@ -1649,6 +1800,8 @@ void NativeWidgetNSWindowBridge::Fullscr
  
  void NativeWidgetNSWindowBridge::FullscreenControllerToggleFullscreen() {
    bool is_key_window = [window_ isKeyWindow];
@@ -1340,3 +1573,48 @@ Index: src/ui/views/widget/native_widget_mac.mm
  void NativeWidgetMac::SetCanAppearInExistingFullscreenSpaces(
      bool can_appear_in_existing_fullscreen_spaces) {
    if (!GetNSWindowMojo()) {
+Index: src/chrome/browser/ui/views/frame/multi_contents_view.cc
+===================================================================
+--- src.orig/chrome/browser/ui/views/frame/multi_contents_view.cc
++++ src/chrome/browser/ui/views/frame/multi_contents_view.cc
+@@ -11,6 +11,7 @@
+ #include "base/feature_list.h"
+ #include "base/i18n/rtl.h"
+ #include "base/notreached.h"
++#include "build/build_config.h"
+ #include "chrome/browser/actor/ui/actor_overlay_web_view.h"
+ #include "chrome/browser/browser_process.h"
+ #include "chrome/browser/profiles/profile.h"
+@@ -57,6 +58,18 @@ namespace {
+ constexpr int kSnapDistance = 15;
+ constexpr float kZenTopChromeAttachedThreshold = 0.5f;
+ 
++bool IsFullscreenForContentsRounding(const BrowserView* browser_view) {
++  const views::Widget* widget = browser_view->GetWidget();
++  if (widget && widget->IsFullscreen()) {
++    return true;
++  }
++#if BUILDFLAG(IS_MAC)
++  return browser_view->IsHeliumNotchFullscreenActive();
++#else
++  return false;
++#endif
++}
++
+ bool IsTopChromeAttached(const BrowserView& browser_view,
+                          bool should_show_top_separator) {
+   return should_show_top_separator &&
+@@ -858,11 +871,11 @@ int MultiContentsView::GetMinViewWidth(g
+ 
+ bool MultiContentsView::ShouldUseRoundedFrame() const {
+   return browser_view_->GetIsNormalType() && is_rounded_frame_pref_enabled_ &&
+-         !browser_view_->IsFullscreen();
++         !IsFullscreenForContentsRounding(browser_view_);
+ }
+ 
+ void MultiContentsView::UpdateContentsBorderAndOverlay() const {
+-  const bool is_fullscreen = browser_view_->IsFullscreen();
++  const bool is_fullscreen = IsFullscreenForContentsRounding(browser_view_);
+   const bool is_in_split = IsInSplitView();
+   const bool should_round_single_contents =
+       !is_in_split && ShouldUseRoundedFrame();
