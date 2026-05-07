@@ -15,13 +15,11 @@ Index: src/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
 ===================================================================
 --- src.orig/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
 +++ src/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
-@@ -141,6 +141,13 @@ void BrowserFrameViewMac::OnFullscreenSt
+@@ -141,6 +141,11 @@ void BrowserFrameViewMac::OnFullscreenSt
      EmitFullscreenSessionHistograms();
    }
  
 +  if (GetBrowserView()->IsHeliumNotchFullscreenActive()) {
-+    ImmersiveModeController::From(GetBrowserView()->browser())
-+        ->SetEnabled(false);
 +    GetBrowserView()->DeprecatedLayoutImmediately();
 +    return;
 +  }
@@ -192,7 +190,7 @@ Index: src/chrome/browser/ui/views/frame/browser_view.cc
 +    return true;
 +  }
 +
-+  if (!fullscreen ||
++  if (!fullscreen || !GetIsNormalType() ||
 +      !base::CommandLine::ForCurrentProcess()->HasSwitch(
 +          switches::kHeliumNotchFullscreen) ||
 +      IsForceFullscreen() ||
@@ -883,3 +881,208 @@ Index: src/chrome/common/chrome_switches.h
  extern const char kHideCrashRestoreBubble[];
  extern const char kHomePage[];
  #if !BUILDFLAG(IS_ANDROID)
+Index: src/chrome/browser/ui/views/frame/browser_native_widget_mac.h
+===================================================================
+--- src.orig/chrome/browser/ui/views/frame/browser_native_widget_mac.h
++++ src/chrome/browser/ui/views/frame/browser_native_widget_mac.h
+@@ -39,6 +39,7 @@ class BrowserNativeWidgetMac : public vi
+   void OnFocusWindowToolbar() override;
+   void OnWindowFullscreenTransitionStart() override;
+   void OnWindowFullscreenTransitionComplete() override;
++  void OnWindowFullscreenToggleRequested() override;
+   void OnWidgetDestroyed(views::Widget* widget) override;
+ 
+   // Overridden from BrowserNativeWidget:
+Index: src/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
+===================================================================
+--- src.orig/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
++++ src/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
+@@ -5,6 +5,7 @@
+ #import "chrome/browser/ui/views/frame/browser_native_widget_mac.h"
+ 
+ #import "base/apple/foundation_util.h"
++#include "base/command_line.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/metrics/user_metrics.h"
+ #include "base/metrics/user_metrics_action.h"
+@@ -16,6 +17,7 @@
+ #include "chrome/browser/browsing_data/browsing_data_important_sites_util.h"
+ #include "chrome/browser/global_keyboard_shortcuts_mac.h"
+ #include "chrome/browser/media/router/media_router_feature.h"
++#include "chrome/browser/platform_util.h"
+ #include "chrome/browser/ui/browser_command_controller.h"
+ #include "chrome/browser/ui/browser_commands.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+@@ -33,6 +35,7 @@
+ #include "chrome/browser/ui/views/web_apps/frame_toolbar/web_app_frame_toolbar_utils.h"
+ #include "chrome/browser/ui/web_applications/app_browser_controller.h"
+ #include "chrome/common/pref_names.h"
++#include "chrome/common/chrome_switches.h"
+ #include "chrome/grit/generated_resources.h"
+ #include "components/bookmarks/common/bookmark_pref_names.h"
+ #include "components/dom_distiller/content/browser/distillable_page_utils.h"
+@@ -202,6 +205,19 @@ void BrowserNativeWidgetMac::OnWindowFul
+   }
+ }
+ 
++void BrowserNativeWidgetMac::OnWindowFullscreenToggleRequested() {
++  if (browser_view_ && browser_view_->GetIsNormalType() &&
++      !browser_view_->IsForceFullscreen() &&
++      !platform_util::IsBrowserLockedFullscreen(browser_view_->browser()) &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch(
++          switches::kHeliumNotchFullscreen)) {
++    chrome::ExecuteCommand(browser_view_->browser(), IDC_FULLSCREEN);
++    return;
++  }
++
++  NativeWidgetMac::OnWindowFullscreenToggleRequested();
++}
++
+ void BrowserNativeWidgetMac::OnWidgetDestroyed(views::Widget* widget) {
+   CHECK(browser_view_);
+   if (UsesRemoteCocoaApplicationHost(browser_view_->browser())) {
+Index: src/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
+===================================================================
+--- src.orig/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
++++ src/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
+@@ -195,6 +195,16 @@ const double kThinControllerHeight = 0.5
+     bridge->host()->OnFocusWindowToolbar();
+ }
+ 
++- (void)toggleFullScreen:(id)sender {
++  remote_cocoa::NativeWidgetNSWindowBridge* bridge = [self bridge];
++  if (!bridge || bridge->is_performing_native_fullscreen_toggle()) {
++    [super toggleFullScreen:sender];
++    return;
++  }
++
++  bridge->host()->OnWindowFullscreenToggleRequested();
++}
++
+ - (void)setAlwaysShowTrafficLights:(BOOL)alwaysShow {
+   [base::apple::ObjCCastStrict<BrowserWindowFrame>(self.contentView.superview)
+       setAlwaysShowTrafficLights:alwaysShow];
+Index: src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h
+===================================================================
+--- src.orig/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h
++++ src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h
+@@ -217,6 +217,9 @@ class REMOTE_COCOA_APP_SHIM_EXPORT Nativ
+   bool in_fullscreen_transition() const {
+     return fullscreen_controller_.IsInFullscreenTransition();
+   }
++  bool is_performing_native_fullscreen_toggle() const {
++    return is_performing_native_fullscreen_toggle_;
++  }
+ 
+   bool CanGoBack() const { return can_go_back_; }
+   bool CanGoForward() const { return can_go_forward_; }
+@@ -463,6 +466,8 @@ class REMOTE_COCOA_APP_SHIM_EXPORT Nativ
+   // Manager of fullscreen state transitions.
+   NativeWidgetNSWindowFullscreenController fullscreen_controller_{this};
+ 
++  bool is_performing_native_fullscreen_toggle_ = false;
++
+   // Stores the value last read from -[NSWindow isVisible], to detect visibility
+   // changes.
+   bool window_visible_ = false;
+Index: src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.mm
+===================================================================
+--- src.orig/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.mm
++++ src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.mm
+@@ -18,6 +18,7 @@
+ 
+ #include "base/apple/bridging.h"
+ #import "base/apple/foundation_util.h"
++#include "base/auto_reset.h"
+ #include "base/apple/scoped_cftyperef.h"
+ #include "base/command_line.h"
+ #include "base/functional/bind.h"
+@@ -1649,6 +1650,8 @@ void NativeWidgetNSWindowBridge::Fullscr
+ 
+ void NativeWidgetNSWindowBridge::FullscreenControllerToggleFullscreen() {
+   bool is_key_window = [window_ isKeyWindow];
++  base::AutoReset<bool> native_toggle(&is_performing_native_fullscreen_toggle_,
++                                      true);
+   [window_ toggleFullScreen:nil];
+   // Ensure the transitioning window maintains focus.
+   // When a key window moves to a different space, AppKit will focus a
+Index: src/components/remote_cocoa/common/native_widget_ns_window_host.mojom
+===================================================================
+--- src.orig/components/remote_cocoa/common/native_widget_ns_window_host.mojom
++++ src/components/remote_cocoa/common/native_widget_ns_window_host.mojom
+@@ -170,6 +170,11 @@ interface NativeWidgetNSWindowHost {
+   // then this will only be called when all transitions have competed.
+   OnWindowFullscreenTransitionComplete(bool is_fullscreen);
+ 
++  // Called when AppKit asks the NSWindow to toggle fullscreen. The host may
++  // handle this through browser-specific fullscreen logic before falling back
++  // to the native fullscreen transition.
++  OnWindowFullscreenToggleRequested();
++
+   // Called when the window is miniaturized or deminiaturized.
+   OnWindowMiniaturizedChanged(bool miniaturized);
+ 
+Index: src/ui/views/cocoa/native_widget_mac_ns_window_host.h
+===================================================================
+--- src.orig/ui/views/cocoa/native_widget_mac_ns_window_host.h
++++ src/ui/views/cocoa/native_widget_mac_ns_window_host.h
+@@ -367,6 +367,7 @@ class VIEWS_EXPORT NativeWidgetMacNSWind
+   void OnWindowFullscreenTransitionStart(bool target_fullscreen_state) override;
+   void OnWindowFullscreenTransitionComplete(
+       bool target_fullscreen_state) override;
++  void OnWindowFullscreenToggleRequested() override;
+   void OnWindowMiniaturizedChanged(bool miniaturized) override;
+   void OnWindowZoomedChanged(bool zoomed) override;
+   void OnWindowDisplayChanged(const display::Display& display) override;
+Index: src/ui/views/cocoa/native_widget_mac_ns_window_host.mm
+===================================================================
+--- src.orig/ui/views/cocoa/native_widget_mac_ns_window_host.mm
++++ src/ui/views/cocoa/native_widget_mac_ns_window_host.mm
+@@ -105,6 +105,7 @@ class BridgedNativeWidgetHostDummy
+   void OnWindowFullscreenTransitionStart(
+       bool target_fullscreen_state) override {}
+   void OnWindowFullscreenTransitionComplete(bool is_fullscreen) override {}
++  void OnWindowFullscreenToggleRequested() override {}
+   void OnWindowMiniaturizedChanged(bool miniaturized) override {}
+   void OnWindowZoomedChanged(bool zoomed) override {}
+   void OnWindowDisplayChanged(const display::Display& display) override {}
+@@ -1441,6 +1442,10 @@ void NativeWidgetMacNSWindowHost::OnWind
+   }
+ }
+ 
++void NativeWidgetMacNSWindowHost::OnWindowFullscreenToggleRequested() {
++  native_widget_mac_->OnWindowFullscreenToggleRequested();
++}
++
+ void NativeWidgetMacNSWindowHost::OnWindowMiniaturizedChanged(
+     bool miniaturized) {
+   is_miniaturized_ = miniaturized;
+Index: src/ui/views/widget/native_widget_mac.h
+===================================================================
+--- src.orig/ui/views/widget/native_widget_mac.h
++++ src/ui/views/widget/native_widget_mac.h
+@@ -99,6 +99,9 @@ class VIEWS_EXPORT NativeWidgetMac : pub
+   // then this will only be called when all transitions have competed.
+   virtual void OnWindowFullscreenTransitionComplete() {}
+ 
++  // Called when AppKit asks the NSWindow to toggle fullscreen.
++  virtual void OnWindowFullscreenToggleRequested();
++
+   // Handle "Move focus to the window toolbar" shortcut.
+   virtual void OnFocusWindowToolbar() {}
+ 
+Index: src/ui/views/widget/native_widget_mac.mm
+===================================================================
+--- src.orig/ui/views/widget/native_widget_mac.mm
++++ src/ui/views/widget/native_widget_mac.mm
+@@ -901,6 +901,10 @@ bool NativeWidgetMac::IsFullscreen() con
+   return ns_window_host_ && ns_window_host_->target_fullscreen_state();
+ }
+ 
++void NativeWidgetMac::OnWindowFullscreenToggleRequested() {
++  SetFullscreen(!IsFullscreen(), display::kInvalidDisplayId);
++}
++
+ void NativeWidgetMac::SetCanAppearInExistingFullscreenSpaces(
+     bool can_appear_in_existing_fullscreen_spaces) {
+   if (!GetNSWindowMojo()) {
