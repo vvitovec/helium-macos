@@ -384,7 +384,7 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 ===================================================================
 --- /dev/null
 +++ src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.mm
-@@ -0,0 +1,366 @@
+@@ -0,0 +1,378 @@
 +// Copyright 2026 The Helium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -411,6 +411,7 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +    NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton};
 +
 +constexpr int kNotchFullscreenFallbackTopStripHeight = 28;
++constexpr int kOffscreenCornerBleed = 32;
 +
 +int RoundCGFloat(CGFloat value) {
 +  return static_cast<int>(std::round(value));
@@ -422,6 +423,12 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +         std::abs(NSMinY(lhs) - NSMinY(rhs)) <= kTolerance &&
 +         std::abs(NSWidth(lhs) - NSWidth(rhs)) <= kTolerance &&
 +         std::abs(NSHeight(lhs) - NSHeight(rhs)) <= kTolerance;
++}
++
++NSRect GetWindowFrameForScreen(NSRect screen_frame) {
++  screen_frame.origin.y -= kOffscreenCornerBleed;
++  screen_frame.size.height += kOffscreenCornerBleed;
++  return screen_frame;
 +}
 +
 +bool IsUsableWindowButtonFrame(NSRect frame) {
@@ -617,7 +624,9 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +  }
 +  NSWindow* window = GetWindow(browser_view_);
 +  NSScreen* screen = [window screen];
-+  return window && screen && NSRectsNearlyEqual([window frame], [screen frame]);
++  return window && screen &&
++         NSRectsNearlyEqual([window frame],
++                            GetWindowFrameForScreen([screen frame]));
 +}
 +
 +void HeliumNotchFullscreenControllerMac::Enter() {
@@ -630,7 +639,8 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +  if (!GetScreenMetrics(screen).has_notch) {
 +    return;
 +  }
-+  const NSRect target_frame = [screen frame];
++  const NSRect screen_frame_ns = [screen frame];
++  const NSRect target_frame = GetWindowFrameForScreen(screen_frame_ns);
 +
 +  auto saved_state = std::make_unique<SavedState>();
 +  saved_state->frame = [window frame];
@@ -668,14 +678,14 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +  [NSApp setPresentationOptions:saved_state_->presentation_options |
 +                                NSApplicationPresentationAutoHideDock |
 +                                NSApplicationPresentationAutoHideMenuBar];
-+  const gfx::Rect screen_frame = gfx::ScreenRectFromNSRect(target_frame);
++  const gfx::Rect screen_frame = gfx::ScreenRectFromNSRect(screen_frame_ns);
 +  [window setStyleMask:NSWindowStyleMaskBorderless];
 +  [window setFrame:target_frame display:YES animate:NO];
 +  if (NSView* content_view = [window contentView]) {
-+    NSView* superview = [content_view superview];
-+    [content_view setFrame:superview ? [superview bounds]
-+                                     : NSMakeRect(0, 0, NSWidth([window frame]),
-+                                                  NSHeight([window frame]))];
++    [content_view setFrame:NSMakeRect(
++                                0, 0, NSWidth(screen_frame_ns),
++                                NSHeight(screen_frame_ns) +
++                                    kOffscreenCornerBleed)];
 +    [content_view setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
 +  }
 +  for (NSWindowButton standard_button : kStandardWindowButtons) {
@@ -689,13 +699,15 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +    gfx::Rect adjusted_screen_frame = screen_frame;
 +    adjusted_screen_frame.set_y(screen_frame.y() +
 +                                saved_state_->titlebar_height);
-+    adjusted_screen_frame.set_height(
-+        std::max(0, screen_frame.height() - saved_state_->titlebar_height));
++    adjusted_screen_frame.set_height(std::max(
++        0, screen_frame.height() - saved_state_->titlebar_height +
++               kOffscreenCornerBleed));
 +    ns_window_mojo->SetWindowButtonsHidden(true);
 +    ns_window_mojo->SetStyleMask(NSWindowStyleMaskBorderless);
 +    ns_window_mojo->SetWindowFrame(adjusted_screen_frame);
 +    ns_window_mojo->SetContentViewFrame(
-+        gfx::Rect(0, 0, screen_frame.width(), screen_frame.height()));
++        gfx::Rect(0, 0, screen_frame.width(),
++                  screen_frame.height() + kOffscreenCornerBleed));
 +    ns_window_mojo->SetWindowButtonsHidden(true);
 +  }
 +  [window makeKeyAndOrderFront:nil];
@@ -1142,7 +1154,30 @@ Index: src/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
 ===================================================================
 --- src.orig/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
 +++ src/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
-@@ -40,6 +40,10 @@ const double kThinControllerHeight = 0.5
+@@ -13,6 +13,12 @@
+ namespace {
+ // Workaround for https://crbug.com/1369643
+ const double kThinControllerHeight = 0.5;
++
++bool ShouldForceSquareWindowCornersForFrame(NSView* frame) {
++  auto* window = base::apple::ObjCCast<NativeWidgetMacNSWindow>(frame.window);
++  remote_cocoa::NativeWidgetNSWindowBridge* bridge = window.bridge;
++  return bridge && bridge->ShouldForceSquareWindowCorners();
++}
+ }  // namespace
+ @interface NSWindow (PrivateBrowserNativeWidgetAPI)
+ + (Class)frameViewClassForStyleMask:(NSUInteger)windowStyle;
+@@ -22,6 +28,9 @@ const double kThinControllerHeight = 0.5
+ - (CGFloat)_titlebarHeight;
+ - (CGFloat)_minXTitlebarWidgetInset;
+ - (CGFloat)_getCachedWindowCornerRadius;
++- (NSSize)_bottomCornerSize;
++- (NSSize)_topCornerSize;
++- (void)_maskCorners:(NSUInteger)corners clipRect:(NSRect)clipRect;
+ - (void)setStyleMask:(NSUInteger)styleMask;
+ - (void)setButtonRevealAmount:(double)amount;
+ @end
+@@ -40,6 +49,10 @@ const double kThinControllerHeight = 0.5
  // widgets, this is also an important part of the functioning of immersive
  // fullscreen and must not be removed lest that break.
  - (CGFloat)_titlebarHeight {
@@ -1153,19 +1188,45 @@ Index: src/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
    auto* window = base::apple::ObjCCast<NativeWidgetMacNSWindow>(self.window);
    remote_cocoa::NativeWidgetNSWindowBridge* bridge = window.bridge;
    if (!bridge) {
-@@ -74,6 +78,11 @@ const double kThinControllerHeight = 0.5
+@@ -74,6 +87,9 @@ const double kThinControllerHeight = 0.5
  // methods (-_topCornerSize, -_bottomCornerSize) also depend on
  // _getCachedWindowCornerRadius.
  - (CGFloat)_getCachedWindowCornerRadius {
-+  auto* window = base::apple::ObjCCast<NativeWidgetMacNSWindow>(self.window);
-+  remote_cocoa::NativeWidgetNSWindowBridge* bridge = window.bridge;
-+  if (bridge && bridge->ShouldForceSquareWindowCorners()) {
++  if (ShouldForceSquareWindowCornersForFrame(self)) {
 +    return 0.0;
 +  }
    if (@available(macOS 26, *)) {
      return 10.0 /* widget position from top and left */ +
             7.0 /* widget radius */;
-@@ -98,6 +107,16 @@ const double kThinControllerHeight = 0.5
+@@ -83,6 +99,27 @@ const double kThinControllerHeight = 0.5
+   return [super _getCachedWindowCornerRadius];
+ }
+
++- (NSSize)_bottomCornerSize {
++  if (ShouldForceSquareWindowCornersForFrame(self)) {
++    return NSZeroSize;
++  }
++  return [super _bottomCornerSize];
++}
++
++- (NSSize)_topCornerSize {
++  if (ShouldForceSquareWindowCornersForFrame(self)) {
++    return NSZeroSize;
++  }
++  return [super _topCornerSize];
++}
++
++- (void)_maskCorners:(NSUInteger)corners clipRect:(NSRect)clipRect {
++  if (ShouldForceSquareWindowCornersForFrame(self)) {
++    return;
++  }
++  [super _maskCorners:corners clipRect:clipRect];
++}
++
+ - (void)setStyleMask:(NSUInteger)styleMask {
+   _inFullScreen = (styleMask & NSWindowStyleMaskFullScreen) != 0;
+   [super setStyleMask:styleMask];
+@@ -98,6 +135,16 @@ const double kThinControllerHeight = 0.5
    // adjusting the visibility of the traffic lights. The layout changes are
    // desired and should be left intact.
    [super setButtonRevealAmount:amount];
@@ -1182,7 +1243,7 @@ Index: src/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
    if (amount == 1.0) {
      return;
    }
-@@ -111,13 +130,20 @@ const double kThinControllerHeight = 0.5
+@@ -111,13 +158,20 @@ const double kThinControllerHeight = 0.5
  }
 
  - (void)maybeShowTrafficLights {
@@ -1206,7 +1267,7 @@ Index: src/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
  }
 
  @end
-@@ -164,6 +190,20 @@ const double kThinControllerHeight = 0.5
+@@ -164,6 +218,20 @@ const double kThinControllerHeight = 0.5
    return self;
  }
 
@@ -1227,7 +1288,7 @@ Index: src/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
  - (void)dealloc {
    [NSNotificationCenter.defaultCenter removeObserver:self];
  }
-@@ -195,6 +235,16 @@ const double kThinControllerHeight = 0.5
+@@ -195,6 +263,16 @@ const double kThinControllerHeight = 0.5
      bridge->host()->OnFocusWindowToolbar();
  }
 
