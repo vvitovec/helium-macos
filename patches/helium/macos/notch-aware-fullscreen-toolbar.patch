@@ -81,7 +81,36 @@ Index: src/chrome/browser/ui/views/frame/browser_view.cc
  #endif
 
  TabStripRegionView* BrowserView::tab_strip_view() const {
-@@ -2716,11 +2735,15 @@ bool BrowserView::ShouldHideUIForFullscr
+@@ -1520,6 +1539,11 @@ bool BrowserView::ShouldDrawWebAppFrameT
+ }
+
+ bool BrowserView::ShouldDrawToolbarTabStrip() const {
++#if BUILDFLAG(IS_MAC)
++  if (IsHeliumNotchFullscreenActive()) {
++    return false;
++  }
++#endif
+   auto* controller = HeliumLayoutStateController::From(browser_);
+   return controller && controller->IsCompactLayout() && GetIsNormalType();
+ }
+@@ -1725,7 +1749,15 @@ void BrowserView::OnToolbarTabStripState
+     return;
+   }
+
+-  if (controller && controller->IsCompactLayout() && GetIsNormalType()) {
++  bool attach_to_toolbar =
++      controller && controller->IsCompactLayout() && GetIsNormalType();
++#if BUILDFLAG(IS_MAC)
++  if (IsHeliumNotchFullscreenActive()) {
++    attach_to_toolbar = false;
++  }
++#endif
++
++  if (attach_to_toolbar) {
+     toolbar_->AttachTabStripRegionView(horizontal_tab_strip_region_view_);
+   } else if (horizontal_tab_strip_region_view_->parent() != this) {
+     if (horizontal_tab_strip_region_insertion_index_) {
+@@ -2716,11 +2748,15 @@ bool BrowserView::ShouldHideUIForFullscr
      return false;
    }
 
@@ -99,7 +128,7 @@ Index: src/chrome/browser/ui/views/frame/browser_view.cc
    return browser_widget_->IsFullscreen();
  }
 
-@@ -3591,6 +3614,11 @@ void BrowserView::DisableTabStripEditing
+@@ -3591,6 +3627,11 @@ void BrowserView::DisableTabStripEditing
 
  bool BrowserView::IsToolbarVisible() const {
  #if BUILDFLAG(IS_MAC)
@@ -111,7 +140,7 @@ Index: src/chrome/browser/ui/views/frame/browser_view.cc
    // Immersive full screen makes it possible to display the toolbar when
    // kShowFullscreenToolbar is not set.
    if (!UsesImmersiveFullscreenMode()) {
-@@ -4816,6 +4844,18 @@ void BrowserView::OnWidgetActivationChan
+@@ -4816,6 +4857,18 @@ void BrowserView::OnWidgetActivationChan
 
  void BrowserView::OnWidgetBoundsChanged(views::Widget* widget,
                                          const gfx::Rect& new_bounds) {
@@ -130,7 +159,7 @@ Index: src/chrome/browser/ui/views/frame/browser_view.cc
    TryNotifyWindowBoundsChanged(new_bounds);
  }
 
-@@ -5357,6 +5397,17 @@ int BrowserView::NonClientHitTest(const
+@@ -5357,6 +5410,17 @@ int BrowserView::NonClientHitTest(const
    views::View::ConvertPointToTarget(parent(), this,
                                      &point_in_browser_view_coords);
 
@@ -148,7 +177,7 @@ Index: src/chrome/browser/ui/views/frame/browser_view.cc
    // Check if the point is in the web_app_frame_toolbar_. Because this toolbar
    // can entirely be within the window controls overlay area, this check needs
    // to be done before the window controls overlay area check below.
-@@ -6245,16 +6296,31 @@ void BrowserView::ProcessFullscreen(bool
+@@ -6245,16 +6309,32 @@ void BrowserView::ProcessFullscreen(bool
 
    PrepareFullscreen(fullscreen);
 
@@ -162,6 +191,7 @@ Index: src/chrome/browser/ui/views/frame/browser_view.cc
 +    } else {
 +      notch_fullscreen_controller->Exit();
 +    }
++    OnToolbarTabStripStateChanged(HeliumLayoutStateController::From(browser_));
 +    FullscreenStateChanged();
 +  } else {
 +    // TODO(b/40276379): Move this out from ProcessFullscreen.
@@ -182,7 +212,7 @@ Index: src/chrome/browser/ui/views/frame/browser_view.cc
 
    // Undo our anti-jankiness hacks and force a re-layout.
    in_process_fullscreen_ = false;
-@@ -6268,6 +6334,40 @@ void BrowserView::ProcessFullscreen(bool
+@@ -6268,6 +6348,40 @@ void BrowserView::ProcessFullscreen(bool
    }
  }
 
