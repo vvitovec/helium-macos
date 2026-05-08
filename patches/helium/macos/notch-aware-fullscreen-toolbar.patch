@@ -1649,14 +1649,11 @@ Index: src/chrome/browser/ui/views/frame/contents_container_view.cc
      }
    } else {
      if (split_changed || rounded_contents_changed) {
-@@ -372,6 +372,12 @@ void ContentsContainerView::ClearBorderR
+@@ -372,6 +372,9 @@ void ContentsContainerView::ClearBorderR
 
    contents_view_->SetBackgroundRadii(kNoRoundedCorners);
    contents_view_->holder()->SetCornerRadii(kNoRoundedCorners);
 +  if (auto* const layer = contents_view_->layer()) {
-+    layer->SetIsFastRoundedCorner(false);
-+  }
-+  if (auto* const layer = contents_view_->holder()->GetUILayer()) {
 +    layer->SetIsFastRoundedCorner(false);
 +  }
 
