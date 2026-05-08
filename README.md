@@ -5,18 +5,17 @@ macOS packaging & development tooling for the
 ## Notch fullscreen experiment
 
 This fork carries an experimental macOS-only Notch Fullscreen mode for Helium.
-The goal is simple: on notched MacBook displays, browser fullscreen can use the
+The goal is simple: on notched MacBook displays, browser fullscreen uses the
 physical top strip around the camera notch instead of leaving that area empty.
 
-The feature is off by default and is enabled with:
+In this fork, the feature is enabled by default for ordinary browser fullscreen
+on supported MacBook displays. The `--helium-notch-fullscreen` switch is still
+accepted for explicit testing, but release builds from this fork do not require
+it.
 
-```sh
---helium-notch-fullscreen
-```
-
-When that switch is present and the user enters normal browser fullscreen,
-Helium uses a custom borderless AppKit window instead of native macOS
-fullscreen. The browser chrome is laid out into the public AppKit
+When the user enters normal browser fullscreen, Helium uses a custom borderless
+AppKit window instead of native macOS fullscreen. The browser chrome is laid out
+into the public AppKit
 `NSScreen.safeAreaInsets`, `auxiliaryTopLeftArea`, and `auxiliaryTopRightArea`
 regions. Web contents stay below the notch strip. Web page/video/tab fullscreen
 and kiosk/locked fullscreen are left alone.
@@ -28,8 +27,9 @@ patches/helium/macos/notch-aware-fullscreen-toolbar.patch
 ```
 
 It adds a small macOS fullscreen controller, a geometry helper for notch metrics,
-a `--helium-notch-fullscreen` switch, and gated layout changes for BrowserView,
-the top container, toolbar, tab strip, window buttons, and content rounding.
+an optional `--helium-notch-fullscreen` switch, and gated layout changes for
+BrowserView, the top container, toolbar, tab strip, window buttons, and content
+rounding.
 It uses public AppKit APIs only. No private macOS APIs, injection, SIP changes,
 or global system hooks are used.
 
@@ -39,12 +39,13 @@ welcome.
 
 ### Trying a release build
 
-If a release includes `Helium.app.zip`, unzip it and run the app with the switch:
+If a release includes `Helium.app.zip`, unzip it and open the app normally. To
+keep the demo away from an existing browser profile, you can also run it with a
+separate profile:
 
 ```sh
 open -n /path/to/Helium.app --args \
-  --user-data-dir="$HOME/Library/Application Support/Helium Notch Demo" \
-  --helium-notch-fullscreen
+  --user-data-dir="$HOME/Library/Application Support/Helium Notch Demo"
 ```
 
 The separate `--user-data-dir` keeps the demo away from an existing browser
@@ -77,8 +78,7 @@ Run the local build:
 
 ```sh
 open -n build/src/out/Default/Helium.app --args \
-  --user-data-dir=/tmp/helium-notch-test \
-  --helium-notch-fullscreen
+  --user-data-dir=/tmp/helium-notch-test
 ```
 
 ## Building and development
