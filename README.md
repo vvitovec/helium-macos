@@ -1,6 +1,11 @@
-# helium-macos
-macOS packaging & development tooling for the
-[Helium Browser](https://github.com/imputnet/helium).
+# Helium Notch Fullscreen
+
+A macOS fork of [Helium Browser](https://github.com/imputnet/helium) that makes
+fullscreen feel native on notched MacBooks.
+
+<p align="center">
+  <img src="docs/assets/macbook-notch-before-after-balanced-notch.png" alt="Side-by-side MacBook comparison showing a normal fullscreen browser wasting the notch strip and Helium using it for tabs and controls">
+</p>
 
 ## Notch fullscreen experiment
 
@@ -36,6 +41,22 @@ or global system hooks are used.
 This is still a practical experiment, not a finished upstream feature. Feedback,
 bug reports, design suggestions, and alternative implementation ideas are very
 welcome.
+
+### Before and after
+
+The screenshots below are framed with the same programmatic MacBook outline and
+notch overlay so the geometry is consistent across both examples.
+
+<table>
+  <tr>
+    <th>Before: normal fullscreen</th>
+    <th>After: Helium Notch fullscreen</th>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/macbook-before-fullscreen-balanced-notch.png" alt="Normal fullscreen browser framed inside a MacBook outline with the notch visible"></td>
+    <td><img src="docs/assets/macbook-helium-notch-fullscreen-balanced-notch.png" alt="Helium Notch fullscreen framed inside a MacBook outline with the notch visible"></td>
+  </tr>
+</table>
 
 ### Trying a release build
 
@@ -79,6 +100,14 @@ Run the local build:
 ```sh
 open -n build/src/out/Default/Helium.app --args \
   --user-data-dir=/tmp/helium-notch-test
+```
+
+Regenerate the README visuals:
+
+```sh
+python3 docs/scripts/build_notch_readme_assets.py \
+  --before /path/to/before-fullscreen.png \
+  --after /path/to/helium-notch-fullscreen.png
 ```
 
 ## Building and development
