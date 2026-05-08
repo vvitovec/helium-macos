@@ -54,6 +54,9 @@ Notes:
 
 - A notched MacBook display is required to see the notch layout.
 - Current local builds are Apple Silicon (`arm64`) unless built otherwise.
+- The release zip must include Chromium runtime libraries inside the app bundle.
+  If a downloaded build is around 50 MB or crashes with a missing
+  `libc++_chrome.dylib`, download the current release asset again.
 - Unsigned or ad-hoc signed builds may need right-click, then Open, the first
   time macOS launches them.
 
