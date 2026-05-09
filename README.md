@@ -1,26 +1,38 @@
 # Helium Notch Fullscreen
 
-A macOS fork of [Helium Browser](https://github.com/imputnet/helium) that makes
-fullscreen feel native on notched MacBooks.
+A macOS fork of [Helium Browser](https://github.com/imputnet/helium) that uses
+the display area around the MacBook notch for browser tabs and controls instead
+of leaving it as dead black space.
 
 <p align="center">
-  <img src="docs/assets/macbook-notch-before-after-wider-notch.png" alt="Side-by-side MacBook comparison showing a normal fullscreen browser wasting the notch strip and Helium using it for tabs and controls">
+  <img src="docs/assets/helium-notch-fullscreen-demo.gif" alt="Animated comparison showing Safari wasting the MacBook notch strip and Helium moving browser chrome into the notch area">
 </p>
 
-## Notch fullscreen experiment
+## What this changes
 
-This fork carries an experimental macOS-only Notch Fullscreen mode for Helium.
-The goal is simple: on notched MacBook displays, browser fullscreen uses the
-physical top strip around the camera notch instead of leaving that area empty.
+Most browsers still treat fullscreen on notched MacBooks as if the notch strip
+cannot be used. The result is a black band at the top of the display, then a
+second row for tabs and the URL bar, and only then the actual page.
+
+Helium Notch Fullscreen moves the browser chrome into that otherwise wasted
+strip. Tabs, the toolbar, window controls, and the URL field are arranged around
+the camera cutout, while web content stays safely below it. The page gets more
+vertical room without hiding anything behind the notch.
+
+The animation above is generated from the real fullscreen screenshots in this
+repo, with a consistent programmatic MacBook outline and notch overlay so the
+before/after geometry stays honest.
+
+## Implementation
 
 In this fork, the feature is enabled by default for ordinary browser fullscreen
 on supported MacBook displays. The `--helium-notch-fullscreen` switch is still
 accepted for explicit testing, but release builds from this fork do not require
 it.
 
-When the user enters normal browser fullscreen, Helium uses a custom borderless
-AppKit window instead of native macOS fullscreen. The browser chrome is laid out
-into the public AppKit
+When the user enters normal browser fullscreen, Helium creates a custom
+borderless AppKit window instead of using native macOS fullscreen. The browser
+chrome is laid out into the public AppKit
 `NSScreen.safeAreaInsets`, `auxiliaryTopLeftArea`, and `auxiliaryTopRightArea`
 regions. Web contents stay below the notch strip. Web page/video/tab fullscreen
 and kiosk/locked fullscreen are left alone.
@@ -44,8 +56,8 @@ welcome.
 
 ### Before and after
 
-The screenshots below are framed with the same programmatic MacBook outline and
-notch overlay so the geometry is consistent across both examples.
+For a static view, these are the two source states used in the hero animation.
+They are framed with the same generated MacBook outline and notch overlay.
 
 <table>
   <tr>
@@ -102,7 +114,7 @@ open -n build/src/out/Default/Helium.app --args \
   --user-data-dir=/tmp/helium-notch-test
 ```
 
-Regenerate the README visuals:
+Regenerate the README visuals, including the animated GIF:
 
 ```sh
 python3 docs/scripts/build_notch_readme_assets.py \

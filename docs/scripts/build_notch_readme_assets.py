@@ -28,10 +28,12 @@ TEXT = (241, 245, 249)
 MUTED = (148, 163, 184)
 RED = (248, 113, 113)
 GREEN = (74, 222, 128)
+PANEL = (15, 20, 30)
+PANEL_EDGE = (43, 51, 66)
 
 
-def font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    for path in (
+def font(size: int, paths: tuple[str, ...] | None = None) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    for path in paths or (
         "/System/Library/Fonts/SFNS.ttf",
         "/System/Library/Fonts/Supplemental/Arial.ttf",
     ):
@@ -46,6 +48,9 @@ FONT_TITLE = font(52)
 FONT_LABEL = font(32)
 FONT_SMALL = font(24)
 FONT_TINY = font(20)
+FONT_GIF_EYEBROW = font(28, ("/System/Library/Fonts/Supplemental/Avenir Next.ttc",))
+FONT_GIF_TITLE = font(64, ("/System/Library/Fonts/Supplemental/Avenir Next.ttc",))
+FONT_GIF_BODY = font(30, ("/System/Library/Fonts/Supplemental/Avenir Next.ttc",))
 
 
 def rounded_mask(size: tuple[int, int], radius: int) -> Image.Image:
@@ -190,8 +195,8 @@ def make_comparison(before: Path, after: Path, output: Path) -> None:
         draw.rounded_rectangle(
             (x, y, x + panel_w, y + label_h + image_h + 36),
             radius=28,
-            fill=(15, 20, 30),
-            outline=(43, 51, 66),
+            fill=PANEL,
+            outline=PANEL_EDGE,
             width=1,
         )
         draw_badge(draw, (x + 26, y + 28), title.upper(), color)
@@ -203,6 +208,102 @@ def make_comparison(before: Path, after: Path, output: Path) -> None:
 
     output.parent.mkdir(parents=True, exist_ok=True)
     canvas.convert("RGB").save(output, quality=94, optimize=True)
+
+
+def draw_gif_header(
+    draw: ImageDraw.ImageDraw,
+    eyebrow: str,
+    title: str,
+    body: str,
+    accent: tuple[int, int, int],
+) -> None:
+    draw.rounded_rectangle((64, 50, 228, 94), radius=22, fill=accent)
+    draw.text((91, 60), eyebrow, font=FONT_GIF_EYEBROW, fill=(8, 11, 18))
+    draw.text((64, 118), title, font=FONT_GIF_TITLE, fill=TEXT)
+    draw.text((66, 198), body, font=FONT_GIF_BODY, fill=MUTED)
+
+
+def make_gif_frame(
+    image_path: Path,
+    eyebrow: str,
+    title: str,
+    body: str,
+    accent: tuple[int, int, int],
+) -> Image.Image:
+    width = 1700
+    height = 1330
+    image_max_w = 1580
+    header_h = 270
+    canvas = Image.new("RGB", (width, height), BG)
+    draw = ImageDraw.Draw(canvas)
+    draw_gif_header(draw, eyebrow, title, body, accent)
+
+    image = Image.open(image_path).convert("RGB")
+    image.thumbnail((image_max_w, height - header_h - 56), Image.Resampling.LANCZOS)
+    x = (width - image.width) // 2
+    y = header_h
+
+    shadow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    shadow_draw = ImageDraw.Draw(shadow)
+    shadow_draw.rounded_rectangle(
+        (x + 16, y + 20, x + image.width - 16, y + image.height + 18),
+        radius=28,
+        fill=(0, 0, 0, 120),
+    )
+    shadow = shadow.filter(ImageFilter.GaussianBlur(28))
+    canvas_rgba = canvas.convert("RGBA")
+    canvas_rgba.alpha_composite(shadow)
+    canvas_rgba.paste(image, (x, y))
+    return canvas_rgba.convert("RGB")
+
+
+def make_demo_gif(before: Path, after: Path, output: Path) -> None:
+    before_frame = make_gif_frame(
+        before,
+        "SAFARI",
+        "Other browsers waste the notch strip",
+        "A black band sits above the page, while tabs and the URL bar still take another row.",
+        RED,
+    )
+    after_frame = make_gif_frame(
+        after,
+        "HELIUM",
+        "Helium turns the notch strip into browser chrome",
+        "Tabs and controls wrap around the camera cutout, giving more vertical room back to the page.",
+        GREEN,
+    )
+
+    frames: list[Image.Image] = []
+    durations: list[int] = []
+
+    frames.append(before_frame)
+    durations.append(2400)
+    for step in range(1, 8):
+        alpha = step / 8
+        frames.append(Image.blend(before_frame, after_frame, alpha))
+        durations.append(80)
+    frames.append(after_frame)
+    durations.append(2600)
+    for step in range(1, 8):
+        alpha = step / 8
+        frames.append(Image.blend(after_frame, before_frame, alpha))
+        durations.append(80)
+
+    paletted = [
+        frame.quantize(colors=192, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+        for frame in frames
+    ]
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    paletted[0].save(
+        output,
+        save_all=True,
+        append_images=paletted[1:],
+        duration=durations,
+        loop=0,
+        disposal=2,
+        optimize=False,
+    )
 
 
 def main() -> None:
@@ -221,6 +322,7 @@ def main() -> None:
     frame_screenshot(before_source, framed_before)
     frame_screenshot(after_source, framed_after)
     make_comparison(framed_before, framed_after, ASSETS / "macbook-notch-before-after-wider-notch.png")
+    make_demo_gif(framed_before, framed_after, ASSETS / "helium-notch-fullscreen-demo.gif")
 
 
 if __name__ == "__main__":
