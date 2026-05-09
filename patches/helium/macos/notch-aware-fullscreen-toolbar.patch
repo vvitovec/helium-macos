@@ -306,7 +306,7 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 ===================================================================
 --- /dev/null
 +++ src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.h
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,74 @@
 +// Copyright 2026 The Helium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -324,6 +324,7 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +struct HeliumNotchFullscreenMetrics {
 +  bool active = false;
 +  bool has_notch = false;
++  gfx::Rect screen_bounds;
 +  gfx::Rect top_left_area;
 +  gfx::Rect top_right_area;
 +  gfx::Rect notch_gap;
@@ -384,7 +385,7 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 ===================================================================
 --- /dev/null
 +++ src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.mm
-@@ -0,0 +1,378 @@
+@@ -0,0 +1,379 @@
 +// Copyright 2026 The Helium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -528,6 +529,7 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +    const gfx::Rect& top_right_area,
 +    int safe_area_top) {
 +  HeliumNotchFullscreenMetrics metrics;
++  metrics.screen_bounds = screen_bounds;
 +  if (safe_area_top <= 0 || top_left_area.IsEmpty() ||
 +      top_right_area.IsEmpty() || top_left_area.right() >= top_right_area.x()) {
 +    return metrics;
@@ -865,7 +867,7 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.
  #include "ui/gfx/geometry/outsets.h"
  #include "ui/gfx/geometry/size.h"
  #include "ui/views/controls/separator.h"
-@@ -149,6 +150,161 @@ BrowserViewTabbedLayoutImpl::BrowserView
+@@ -149,6 +150,173 @@ BrowserViewTabbedLayoutImpl::BrowserView
 
  BrowserViewTabbedLayoutImpl::~BrowserViewTabbedLayoutImpl() = default;
 
@@ -918,6 +920,15 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.
 +
 +  const HeliumNotchFullscreenMetrics metrics =
 +      delegate().GetHeliumNotchFullscreenMetrics();
++  gfx::Rect visible_bounds = bounds;
++  if (metrics.active && !metrics.screen_bounds.IsEmpty()) {
++    // The native window is taller than the display so AppKit's rounded bottom
++    // corners stay offscreen. Keep Views/web layout inside the visible screen.
++    visible_bounds.set_width(
++        std::min(bounds.width(), metrics.screen_bounds.width()));
++    visible_bounds.set_height(
++        std::min(bounds.height(), metrics.screen_bounds.height()));
++  }
 +  const TabStripType tab_strip_type = GetTabStripType();
 +  const bool show_horizontal_tabs = delegate().ShouldLayoutTabStrip() &&
 +                                    tab_strip_type == TabStripType::kHorizontal;
@@ -935,9 +946,10 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.
 +          : GetLayoutConstant(LayoutConstant::kTabHeight);
 +  const HeliumNotchFullscreenLayoutMetrics notch_layout =
 +      CalculateHeliumNotchFullscreenLayoutMetrics(
-+          bounds, metrics, toolbar_height, tabstrip_height);
-+  const gfx::Rect top_container_bounds(bounds.x(), bounds.y(), bounds.width(),
-+                                       notch_layout.top_strip_height);
++          visible_bounds, metrics, toolbar_height, tabstrip_height);
++  const gfx::Rect top_container_bounds(
++      visible_bounds.x(), visible_bounds.y(), visible_bounds.width(),
++      notch_layout.top_strip_height);
 +
 +  if (IsParentedTo(views().horizontal_tab_strip_region_view,
 +                   views().browser_view)) {
@@ -998,7 +1010,7 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.
 +    const bool infobar_visible = delegate().IsInfobarVisible();
 +    if (infobar_visible) {
 +      infobar_bounds =
-+          gfx::Rect(bounds.x(), contents_top, bounds.width(),
++          gfx::Rect(visible_bounds.x(), contents_top, visible_bounds.width(),
 +                    views().infobar_container->GetPreferredSize().height());
 +      contents_top = infobar_bounds.bottom();
 +    }
@@ -1014,9 +1026,11 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.
 +  }
 +
 +  if (IsParentedTo(views().contents_container, views().browser_view)) {
++    const int contents_height =
++        std::max(0, visible_bounds.bottom() - contents_top);
 +    layout.AddChild(views().contents_container,
-+                    gfx::Rect(bounds.x(), contents_top, bounds.width(),
-+                              std::max(0, bounds.bottom() - contents_top)),
++                    gfx::Rect(visible_bounds.x(), contents_top,
++                              visible_bounds.width(), contents_height),
 +                    true);
 +  }
 +
@@ -1027,7 +1041,7 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.
  BrowserViewTabbedLayoutImpl::TopSeparatorType
  BrowserViewTabbedLayoutImpl::GetTopSeparatorType() const {
    if (!delegate().IsToolbarVisible() && !delegate().IsBookmarkBarVisible()) {
-@@ -683,6 +839,12 @@ BrowserViewTabbedLayoutImpl::CalculatePr
+@@ -683,6 +851,12 @@ BrowserViewTabbedLayoutImpl::CalculatePr
    TRACE_EVENT0("ui", "BrowserViewLayoutImpl::CalculateProposedLayout");
    ProposedLayout layout;
 
