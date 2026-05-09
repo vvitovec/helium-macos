@@ -16,7 +16,7 @@ SCREEN_H = 1864
 # Approximate physical notch proportions for a 14/16-inch MacBook Pro display,
 # scaled to these 2880px-wide screenshots. Screenshots do not capture the
 # physical camera cutout, so the overlay makes that missing hardware visible.
-NOTCH_W = 240
+NOTCH_W = 264
 NOTCH_H = 54
 NOTCH_RADIUS = 14
 
