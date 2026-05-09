@@ -4,7 +4,7 @@ A macOS fork of [Helium Browser](https://github.com/imputnet/helium) that makes
 fullscreen feel native on notched MacBooks.
 
 <p align="center">
-  <img src="docs/assets/macbook-notch-before-after-balanced-notch.png" alt="Side-by-side MacBook comparison showing a normal fullscreen browser wasting the notch strip and Helium using it for tabs and controls">
+  <img src="docs/assets/macbook-notch-before-after-wide-notch.png" alt="Side-by-side MacBook comparison showing a normal fullscreen browser wasting the notch strip and Helium using it for tabs and controls">
 </p>
 
 ## Notch fullscreen experiment
@@ -53,8 +53,8 @@ notch overlay so the geometry is consistent across both examples.
     <th>After: Helium Notch fullscreen</th>
   </tr>
   <tr>
-    <td><img src="docs/assets/macbook-before-fullscreen-balanced-notch.png" alt="Normal fullscreen browser framed inside a MacBook outline with the notch visible"></td>
-    <td><img src="docs/assets/macbook-helium-notch-fullscreen-balanced-notch.png" alt="Helium Notch fullscreen framed inside a MacBook outline with the notch visible"></td>
+    <td><img src="docs/assets/macbook-before-fullscreen-wide-notch.png" alt="Normal fullscreen browser framed inside a MacBook outline with the notch visible"></td>
+    <td><img src="docs/assets/macbook-helium-notch-fullscreen-wide-notch.png" alt="Helium Notch fullscreen framed inside a MacBook outline with the notch visible"></td>
   </tr>
 </table>
 

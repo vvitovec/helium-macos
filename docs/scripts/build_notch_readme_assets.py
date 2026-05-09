@@ -16,7 +16,7 @@ SCREEN_H = 1864
 # Approximate physical notch proportions for a 14/16-inch MacBook Pro display,
 # scaled to these 2880px-wide screenshots. Screenshots do not capture the
 # physical camera cutout, so the overlay makes that missing hardware visible.
-NOTCH_W = 180
+NOTCH_W = 220
 NOTCH_H = 54
 NOTCH_RADIUS = 14
 
@@ -216,11 +216,11 @@ def main() -> None:
     before_source.write_bytes(args.before.read_bytes())
     after_source.write_bytes(args.after.read_bytes())
 
-    framed_before = ASSETS / "macbook-before-fullscreen-balanced-notch.png"
-    framed_after = ASSETS / "macbook-helium-notch-fullscreen-balanced-notch.png"
+    framed_before = ASSETS / "macbook-before-fullscreen-wide-notch.png"
+    framed_after = ASSETS / "macbook-helium-notch-fullscreen-wide-notch.png"
     frame_screenshot(before_source, framed_before)
     frame_screenshot(after_source, framed_after)
-    make_comparison(framed_before, framed_after, ASSETS / "macbook-notch-before-after-balanced-notch.png")
+    make_comparison(framed_before, framed_after, ASSETS / "macbook-notch-before-after-wide-notch.png")
 
 
 if __name__ == "__main__":
