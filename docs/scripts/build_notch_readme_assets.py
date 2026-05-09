@@ -48,7 +48,6 @@ FONT_TITLE = font(52)
 FONT_LABEL = font(32)
 FONT_SMALL = font(24)
 FONT_TINY = font(20)
-FONT_GIF_EYEBROW = font(28, ("/System/Library/Fonts/Supplemental/Avenir Next.ttc",))
 FONT_GIF_TITLE = font(64, ("/System/Library/Fonts/Supplemental/Avenir Next.ttc",))
 FONT_GIF_BODY = font(30, ("/System/Library/Fonts/Supplemental/Avenir Next.ttc",))
 
@@ -188,7 +187,7 @@ def make_comparison(before: Path, after: Path, output: Path) -> None:
 
     panels = [
         (left, pad, "Before", "normal fullscreen leaves the top strip empty", RED),
-        (right, pad + panel_w + gap, "After", "Helium puts tabs and controls around the notch", GREEN),
+        (right, pad + panel_w + gap, "After", "this fork puts tabs and controls around the notch", GREEN),
     ]
     for image, x, title, subtitle, color in panels:
         y = 150
@@ -210,33 +209,19 @@ def make_comparison(before: Path, after: Path, output: Path) -> None:
     canvas.convert("RGB").save(output, quality=94, optimize=True)
 
 
-def draw_gif_header(
-    draw: ImageDraw.ImageDraw,
-    eyebrow: str,
-    title: str,
-    body: str,
-    accent: tuple[int, int, int],
-) -> None:
-    draw.rounded_rectangle((64, 50, 228, 94), radius=22, fill=accent)
-    draw.text((91, 60), eyebrow, font=FONT_GIF_EYEBROW, fill=(8, 11, 18))
-    draw.text((64, 118), title, font=FONT_GIF_TITLE, fill=TEXT)
-    draw.text((66, 198), body, font=FONT_GIF_BODY, fill=MUTED)
+def draw_gif_header(draw: ImageDraw.ImageDraw, title: str, body: str) -> None:
+    draw.text((64, 68), title, font=FONT_GIF_TITLE, fill=TEXT)
+    draw.multiline_text((66, 148), body, font=FONT_GIF_BODY, fill=MUTED, spacing=8)
 
 
-def make_gif_frame(
-    image_path: Path,
-    eyebrow: str,
-    title: str,
-    body: str,
-    accent: tuple[int, int, int],
-) -> Image.Image:
+def make_gif_frame(image_path: Path, title: str, body: str) -> Image.Image:
     width = 1700
     height = 1330
     image_max_w = 1580
-    header_h = 270
+    header_h = 240
     canvas = Image.new("RGB", (width, height), BG)
     draw = ImageDraw.Draw(canvas)
-    draw_gif_header(draw, eyebrow, title, body, accent)
+    draw_gif_header(draw, title, body)
 
     image = Image.open(image_path).convert("RGB")
     image.thumbnail((image_max_w, height - header_h - 56), Image.Resampling.LANCZOS)
@@ -260,17 +245,13 @@ def make_gif_frame(
 def make_demo_gif(before: Path, after: Path, output: Path) -> None:
     before_frame = make_gif_frame(
         before,
-        "SAFARI",
-        "Other browsers waste the notch strip",
-        "A black band sits above the page, while tabs and the URL bar still take another row.",
-        RED,
+        "Fullscreen usually wastes the notch strip",
+        "The top of the display becomes a black band,\nthen tabs and the URL bar take another row below it.",
     )
     after_frame = make_gif_frame(
         after,
-        "HELIUM",
-        "Helium turns the notch strip into browser chrome",
-        "Tabs and controls wrap around the camera cutout, giving more vertical room back to the page.",
-        GREEN,
+        "This Helium fork uses the notch area",
+        "My experimental macOS fork moves tabs and controls around the camera cutout,\ngiving more vertical room back to the page.",
     )
 
     frames: list[Image.Image] = []
