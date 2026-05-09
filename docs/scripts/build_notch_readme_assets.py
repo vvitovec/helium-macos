@@ -258,17 +258,9 @@ def make_demo_gif(before: Path, after: Path, output: Path) -> None:
     durations: list[int] = []
 
     frames.append(before_frame)
-    durations.append(2400)
-    for step in range(1, 8):
-        alpha = step / 8
-        frames.append(Image.blend(before_frame, after_frame, alpha))
-        durations.append(80)
+    durations.append(3500)
     frames.append(after_frame)
-    durations.append(2600)
-    for step in range(1, 8):
-        alpha = step / 8
-        frames.append(Image.blend(after_frame, before_frame, alpha))
-        durations.append(80)
+    durations.append(3500)
 
     paletted = [
         frame.quantize(colors=192, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
