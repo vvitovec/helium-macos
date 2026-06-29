@@ -1,7 +1,7 @@
 Index: src/chrome/browser/ui/BUILD.gn
 ===================================================================
---- src.orig/chrome/browser/ui/BUILD.gn
-+++ src/chrome/browser/ui/BUILD.gn
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
 @@ -3358,6 +3358,8 @@ static_library("ui") {
        "views/frame/browser_native_widget_factory_mac.mm",
        "views/frame/browser_native_widget_mac.h",
@@ -13,12 +13,12 @@ Index: src/chrome/browser/ui/BUILD.gn
        "views/frame/immersive_mode_overlay_views_mac.h",
 Index: src/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
 ===================================================================
---- src.orig/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
-+++ src/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
+--- a/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
++++ b/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
 @@ -141,6 +141,11 @@ void BrowserFrameViewMac::OnFullscreenSt
      EmitFullscreenSessionHistograms();
    }
-
+ 
 +  if (GetBrowserView()->IsHeliumNotchFullscreenActive()) {
 +    GetBrowserView()->DeprecatedLayoutImmediately();
 +    return;
@@ -29,7 +29,7 @@ Index: src/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
          ->SetEnabled(GetBrowserView()->IsFullscreen());
 @@ -327,6 +332,9 @@ views::LayoutAlignment BrowserFrameViewM
  }
-
+ 
  gfx::RoundedCornersF BrowserFrameViewMac::GetWindowRoundedCorners() const {
 +  if (GetBrowserView()->IsHeliumNotchFullscreenActive()) {
 +    return gfx::RoundedCornersF();
@@ -39,8 +39,8 @@ Index: src/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
      return gfx::RoundedCornersF(
 Index: src/chrome/browser/ui/views/frame/browser_view.cc
 ===================================================================
---- src.orig/chrome/browser/ui/views/frame/browser_view.cc
-+++ src/chrome/browser/ui/views/frame/browser_view.cc
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
 @@ -373,6 +373,7 @@
  #if BUILDFLAG(IS_MAC)
  #include "chrome/browser/global_keyboard_shortcuts_mac.h"
@@ -51,7 +51,7 @@ Index: src/chrome/browser/ui/views/frame/browser_view.cc
  #include "components/remote_cocoa/browser/application_host.h"
 @@ -1186,6 +1187,12 @@ BrowserView::BrowserView(Browser* browse
  }
-
+ 
  BrowserView::~BrowserView() {
 +#if BUILDFLAG(IS_MAC)
 +  if (helium_notch_fullscreen_controller_) {
@@ -79,11 +79,11 @@ Index: src/chrome/browser/ui/views/frame/browser_view.cc
 +             : HeliumNotchFullscreenMetrics();
 +}
  #endif
-
+ 
  TabStripRegionView* BrowserView::tab_strip_view() const {
 @@ -1520,6 +1539,11 @@ bool BrowserView::ShouldDrawWebAppFrameT
  }
-
+ 
  bool BrowserView::ShouldDrawToolbarTabStrip() const {
 +#if BUILDFLAG(IS_MAC)
 +  if (IsHeliumNotchFullscreenActive()) {
@@ -96,7 +96,7 @@ Index: src/chrome/browser/ui/views/frame/browser_view.cc
 @@ -1725,7 +1749,15 @@ void BrowserView::OnToolbarTabStripState
      return;
    }
-
+ 
 -  if (controller && controller->IsCompactLayout() && GetIsNormalType()) {
 +  bool attach_to_toolbar =
 +      controller && controller->IsCompactLayout() && GetIsNormalType();
@@ -113,12 +113,12 @@ Index: src/chrome/browser/ui/views/frame/browser_view.cc
 @@ -2716,11 +2748,15 @@ bool BrowserView::ShouldHideUIForFullscr
      return false;
    }
-
+ 
 -  return browser_widget_->IsFullscreen() &&
 -         GetFrameView()->ShouldHideTopUIInFullscreen();
 +  return IsFullscreen() && GetFrameView()->ShouldHideTopUIInFullscreen();
  }
-
+ 
  bool BrowserView::IsFullscreen() const {
 +#if BUILDFLAG(IS_MAC)
 +  if (IsHeliumNotchFullscreenActive()) {
@@ -127,9 +127,9 @@ Index: src/chrome/browser/ui/views/frame/browser_view.cc
 +#endif
    return browser_widget_->IsFullscreen();
  }
-
+ 
 @@ -3591,6 +3627,11 @@ void BrowserView::DisableTabStripEditing
-
+ 
  bool BrowserView::IsToolbarVisible() const {
  #if BUILDFLAG(IS_MAC)
 +  if (IsHeliumNotchFullscreenActive() &&
@@ -141,7 +141,7 @@ Index: src/chrome/browser/ui/views/frame/browser_view.cc
    // kShowFullscreenToolbar is not set.
    if (!UsesImmersiveFullscreenMode()) {
 @@ -4816,6 +4857,18 @@ void BrowserView::OnWidgetActivationChan
-
+ 
  void BrowserView::OnWidgetBoundsChanged(views::Widget* widget,
                                          const gfx::Rect& new_bounds) {
 +#if BUILDFLAG(IS_MAC)
@@ -158,11 +158,11 @@ Index: src/chrome/browser/ui/views/frame/browser_view.cc
 +
    TryNotifyWindowBoundsChanged(new_bounds);
  }
-
+ 
 @@ -5357,6 +5410,17 @@ int BrowserView::NonClientHitTest(const
    views::View::ConvertPointToTarget(parent(), this,
                                      &point_in_browser_view_coords);
-
+ 
 +#if BUILDFLAG(IS_MAC)
 +  if (IsHeliumNotchFullscreenActive()) {
 +    const HeliumNotchFullscreenMetrics metrics =
@@ -178,9 +178,9 @@ Index: src/chrome/browser/ui/views/frame/browser_view.cc
    // can entirely be within the window controls overlay area, this check needs
    // to be done before the window controls overlay area check below.
 @@ -6245,16 +6309,32 @@ void BrowserView::ProcessFullscreen(bool
-
+ 
    PrepareFullscreen(fullscreen);
-
+ 
 +#if BUILDFLAG(IS_MAC)
 +  const bool handled_by_notch_fullscreen =
 +      ShouldUseHeliumNotchFullscreen(fullscreen);
@@ -200,7 +200,7 @@ Index: src/chrome/browser/ui/views/frame/browser_view.cc
 +#else
    // TODO(b/40276379): Move this out from ProcessFullscreen.
    RequestFullscreen(fullscreen, display_id);
-
+ 
 -#if !BUILDFLAG(IS_MAC)
    // On Mac platforms, FullscreenStateChanged() is invoked from
    // BrowserNativeWidgetMac::OnWindowFullscreenTransitionComplete when the
@@ -209,13 +209,13 @@ Index: src/chrome/browser/ui/views/frame/browser_view.cc
    FullscreenStateChanged();
 -#endif
 +#endif  // BUILDFLAG(IS_MAC)
-
+ 
    // Undo our anti-jankiness hacks and force a re-layout.
    in_process_fullscreen_ = false;
 @@ -6268,6 +6348,40 @@ void BrowserView::ProcessFullscreen(bool
    }
  }
-
+ 
 +#if BUILDFLAG(IS_MAC)
 +HeliumNotchFullscreenControllerMac*
 +BrowserView::GetHeliumNotchFullscreenController() {
@@ -255,8 +255,8 @@ Index: src/chrome/browser/ui/views/frame/browser_view.cc
    // Request target display fullscreen from lower layers on supported platforms.
 Index: src/chrome/browser/ui/views/frame/browser_view.h
 ===================================================================
---- src.orig/chrome/browser/ui/views/frame/browser_view.h
-+++ src/chrome/browser/ui/views/frame/browser_view.h
+--- a/chrome/browser/ui/views/frame/browser_view.h
++++ b/chrome/browser/ui/views/frame/browser_view.h
 @@ -83,6 +83,10 @@ struct DropData;
  class ExclusiveAccessBubbleViews;
  class ExclusiveAccessBubbleViewsContext;
@@ -276,12 +276,12 @@ Index: src/chrome/browser/ui/views/frame/browser_view.h
 +  bool IsHeliumNotchFullscreenActive() const;
 +  HeliumNotchFullscreenMetrics GetHeliumNotchFullscreenMetrics() const;
  #endif
-
+ 
    // Container for the web contents.
 @@ -1078,6 +1085,11 @@ class BrowserView : public BrowserWindow
    // Request the underlying platform to make the window fullscreen.
    void RequestFullscreen(bool fullscreen, int64_t display_id);
-
+ 
 +#if BUILDFLAG(IS_MAC)
 +  HeliumNotchFullscreenControllerMac* GetHeliumNotchFullscreenController();
 +  bool ShouldUseHeliumNotchFullscreen(bool fullscreen);
@@ -289,11 +289,11 @@ Index: src/chrome/browser/ui/views/frame/browser_view.h
 +
    void SynchronizeRenderWidgetHostVisualPropertiesForMainFrame();
    void NotifyWidgetSizeConstraintsChanged();
-
+ 
 @@ -1409,6 +1421,11 @@ class BrowserView : public BrowserWindow
    // Kiosk session.
    bool force_fullscreen_ = false;
-
+ 
 +#if BUILDFLAG(IS_MAC)
 +  std::unique_ptr<HeliumNotchFullscreenControllerMac>
 +      helium_notch_fullscreen_controller_;
@@ -301,15 +301,15 @@ Index: src/chrome/browser/ui/views/frame/browser_view.h
 +
    // The runner used for displaying tab-loading animations.
    std::unique_ptr<gfx::AnimationRunner> loading_animation_;
-
+ 
 Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.h
 ===================================================================
 --- /dev/null
-+++ src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.h
++++ b/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.h
 @@ -0,0 +1,74 @@
 +// Copyright 2026 The Helium Authors
-+// Use of this source code is governed by a BSD-style license that can be
-+// found in the LICENSE file.
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
 +
 +#ifndef CHROME_BROWSER_UI_VIEWS_FRAME_HELIUM_NOTCH_FULLSCREEN_CONTROLLER_MAC_H_
 +#define CHROME_BROWSER_UI_VIEWS_FRAME_HELIUM_NOTCH_FULLSCREEN_CONTROLLER_MAC_H_
@@ -384,11 +384,11 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.mm
 ===================================================================
 --- /dev/null
-+++ src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.mm
++++ b/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.mm
 @@ -0,0 +1,379 @@
 +// Copyright 2026 The Helium Authors
-+// Use of this source code is governed by a BSD-style license that can be
-+// found in the LICENSE file.
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
 +
 +#include "chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.h"
 +
@@ -767,24 +767,24 @@ Index: src/chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.
 +}
 Index: src/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate.h
 ===================================================================
---- src.orig/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate.h
-+++ src/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate.h
+--- a/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate.h
++++ b/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate.h
 @@ -5,10 +5,15 @@
  #ifndef CHROME_BROWSER_UI_VIEWS_FRAME_LAYOUT_BROWSER_VIEW_LAYOUT_DELEGATE_H_
  #define CHROME_BROWSER_UI_VIEWS_FRAME_LAYOUT_BROWSER_VIEW_LAYOUT_DELEGATE_H_
-
+ 
 +#include "build/build_config.h"
  #include "chrome/browser/ui/views/frame/layout/browser_view_layout_params.h"
  #include "ui/gfx/native_ui_types.h"
  #include "ui/views/layout/layout_types.h"
-
+ 
 +#if BUILDFLAG(IS_MAC)
 +#include "chrome/browser/ui/views/frame/helium_notch_fullscreen_controller_mac.h"
 +#endif
 +
  class ExclusiveAccessBubbleViews;
  class ImmersiveModeController;
-
+ 
 @@ -52,6 +57,12 @@ class BrowserViewLayoutDelegate {
    virtual float GetTopChromeRevealRatio() const { return 1.f; }
    virtual float GetSideChromeRevealRatio() const { return 1.f; }
@@ -800,12 +800,12 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate.h
    virtual void MoveWindowForFindBarIfNecessary() const = 0;
 Index: src/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
 ===================================================================
---- src.orig/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
-+++ src/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
+--- a/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
++++ b/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
 @@ -23,6 +23,10 @@
  #include "ui/gfx/geometry/rect.h"
  #include "ui/views/view.h"
-
+ 
 +#if BUILDFLAG(IS_MAC)
 +#include "chrome/browser/ui/fullscreen_util_mac.h"
 +#endif
@@ -816,7 +816,7 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_imp
 @@ -231,6 +235,18 @@ bool BrowserViewLayoutDelegateImpl::IsZe
    return browser_view_->IsZenModeSideChromePinned();
  }
-
+ 
 +#if BUILDFLAG(IS_MAC)
 +bool BrowserViewLayoutDelegateImpl::IsHeliumNotchFullscreenActive() const {
 +  return browser_view_->IsHeliumNotchFullscreenActive() &&
@@ -834,15 +834,15 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_imp
    auto* const controller = GetImmersiveModeController();
 Index: src/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.h
 ===================================================================
---- src.orig/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.h
-+++ src/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.h
+--- a/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.h
++++ b/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.h
 @@ -7,6 +7,7 @@
-
+ 
  #include "base/auto_reset.h"
  #include "base/memory/raw_ref.h"
 +#include "build/build_config.h"
  #include "chrome/browser/ui/views/frame/layout/browser_view_layout_delegate.h"
-
+ 
  class BrowserFrameView;
 @@ -47,6 +48,10 @@ class BrowserViewLayoutDelegateImpl : pu
    float GetTopChromeRevealRatio() const override;
@@ -857,8 +857,8 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_imp
    void MoveWindowForFindBarIfNecessary() const override;
 Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
 ===================================================================
---- src.orig/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
-+++ src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+--- a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
++++ b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
 @@ -37,6 +37,7 @@
  #include "chrome/browser/ui/views/tabs/projects/layout_constants.h"
  #include "chrome/browser/ui/views/tabs/projects/projects_panel_utils.h"
@@ -868,9 +868,9 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.
  #include "ui/gfx/geometry/size.h"
  #include "ui/views/controls/separator.h"
 @@ -149,6 +150,173 @@ BrowserViewTabbedLayoutImpl::BrowserView
-
+ 
  BrowserViewTabbedLayoutImpl::~BrowserViewTabbedLayoutImpl() = default;
-
+ 
 +#if BUILDFLAG(IS_MAC)
 +BrowserViewTabbedLayoutImpl::ProposedLayout
 +BrowserViewTabbedLayoutImpl::CalculateNotchFullscreenLayout(
@@ -1044,7 +1044,7 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.
 @@ -683,6 +851,12 @@ BrowserViewTabbedLayoutImpl::CalculatePr
    TRACE_EVENT0("ui", "BrowserViewLayoutImpl::CalculateProposedLayout");
    ProposedLayout layout;
-
+ 
 +#if BUILDFLAG(IS_MAC)
 +  if (delegate().IsHeliumNotchFullscreenActive()) {
 +    return CalculateNotchFullscreenLayout(browser_params);
@@ -1056,12 +1056,12 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.
      layout.AddChild(views().window_scrim, browser_params.visual_client_area);
 Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.h
 ===================================================================
---- src.orig/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.h
-+++ src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.h
+--- a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.h
++++ b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.h
 @@ -7,6 +7,7 @@
-
+ 
  #include <utility>
-
+ 
 +#include "build/build_config.h"
  #include "chrome/browser/ui/animation/browser_animation_types.h"
  #include "chrome/browser/ui/helium/helium_layout_state_controller.h"
@@ -1069,7 +1069,7 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.
 @@ -62,6 +63,11 @@ class BrowserViewTabbedLayoutImpl : publ
    // height side panel.
    gfx::Size GetMinimumMainAreaSize(const BrowserLayoutParams& params) const;
-
+ 
 +#if BUILDFLAG(IS_MAC)
 +  ProposedLayout CalculateNotchFullscreenLayout(
 +      const BrowserLayoutParams& params) const;
@@ -1080,12 +1080,12 @@ Index: src/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.
        const BrowserLayoutParams& params) const;
 Index: src/chrome/common/chrome_switches.cc
 ===================================================================
---- src.orig/chrome/common/chrome_switches.cc
-+++ src/chrome/common/chrome_switches.cc
+--- a/chrome/common/chrome_switches.cc
++++ b/chrome/common/chrome_switches.cc
 @@ -346,6 +346,13 @@ const char kForceFirstRun[] = "force-fir
  // showing the First Run experience).
  const char kForceWhatsNew[] = "force-whats-new";
-
+ 
 +#if BUILDFLAG(IS_MAC)
 +// Explicit switch for Helium's borderless, notch-aware browser fullscreen on
 +// supported MacBook displays. This macOS fork enables the same behavior by
@@ -1098,8 +1098,8 @@ Index: src/chrome/common/chrome_switches.cc
  // enabled, because the ChromeOS full restore notification is shown for the user
 Index: src/chrome/common/chrome_switches.h
 ===================================================================
---- src.orig/chrome/common/chrome_switches.h
-+++ src/chrome/common/chrome_switches.h
+--- a/chrome/common/chrome_switches.h
++++ b/chrome/common/chrome_switches.h
 @@ -122,6 +122,9 @@ extern const char kForceDevToolsAvailabl
  extern const char kForceFirstRun[];
  extern const char kRefreshPlatformPolicy[];
@@ -1112,20 +1112,20 @@ Index: src/chrome/common/chrome_switches.h
  #if !BUILDFLAG(IS_ANDROID)
 Index: src/chrome/browser/ui/views/frame/browser_native_widget_mac.h
 ===================================================================
---- src.orig/chrome/browser/ui/views/frame/browser_native_widget_mac.h
-+++ src/chrome/browser/ui/views/frame/browser_native_widget_mac.h
+--- a/chrome/browser/ui/views/frame/browser_native_widget_mac.h
++++ b/chrome/browser/ui/views/frame/browser_native_widget_mac.h
 @@ -39,6 +39,7 @@ class BrowserNativeWidgetMac : public vi
    void OnFocusWindowToolbar() override;
    void OnWindowFullscreenTransitionStart() override;
    void OnWindowFullscreenTransitionComplete() override;
 +  void OnWindowFullscreenToggleRequested() override;
    void OnWidgetDestroyed(views::Widget* widget) override;
-
+ 
    // Overridden from BrowserNativeWidget:
 Index: src/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
 ===================================================================
---- src.orig/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
-+++ src/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
+--- a/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
++++ b/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
 @@ -16,6 +16,7 @@
  #include "chrome/browser/browsing_data/browsing_data_important_sites_util.h"
  #include "chrome/browser/global_keyboard_shortcuts_mac.h"
@@ -1144,12 +1144,12 @@ Index: src/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
 +    }
 +
      const auto top_element_info = browser_view_->GetFrameElementInfo();
-
+ 
      *titlebar_height =
 @@ -202,6 +208,17 @@ void BrowserNativeWidgetMac::OnWindowFul
    }
  }
-
+ 
 +void BrowserNativeWidgetMac::OnWindowFullscreenToggleRequested() {
 +  if (browser_view_ && browser_view_->GetIsNormalType() &&
 +      !browser_view_->IsForceFullscreen() &&
@@ -1166,8 +1166,8 @@ Index: src/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
    if (UsesRemoteCocoaApplicationHost(browser_view_->browser())) {
 Index: src/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
 ===================================================================
---- src.orig/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
-+++ src/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
+--- a/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
++++ b/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
 @@ -13,6 +13,12 @@
  namespace {
  // Workaround for https://crbug.com/1369643
@@ -1215,7 +1215,7 @@ Index: src/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
 @@ -83,6 +99,27 @@ const double kThinControllerHeight = 0.5
    return [super _getCachedWindowCornerRadius];
  }
-
+ 
 +- (NSSize)_bottomCornerSize {
 +  if (ShouldForceSquareWindowCornersForFrame(self)) {
 +    return NSZeroSize;
@@ -1259,7 +1259,7 @@ Index: src/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
    }
 @@ -111,13 +158,20 @@ const double kThinControllerHeight = 0.5
  }
-
+ 
  - (void)maybeShowTrafficLights {
 +  if ((self.window.styleMask & NSWindowStyleMaskTitled) == 0) {
 +    return;
@@ -1279,12 +1279,12 @@ Index: src/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
 +    [button_view setAlphaValue:1.0];
 +  }
  }
-
+ 
  @end
 @@ -164,6 +218,20 @@ const double kThinControllerHeight = 0.5
    return self;
  }
-
+ 
 +- (NSRect)contentRectForFrameRect:(NSRect)frameRect {
 +  if ((self.styleMask & NSWindowStyleMaskTitled) == 0) {
 +    return frameRect;
@@ -1305,7 +1305,7 @@ Index: src/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
 @@ -195,6 +263,16 @@ const double kThinControllerHeight = 0.5
      bridge->host()->OnFocusWindowToolbar();
  }
-
+ 
 +- (void)toggleFullScreen:(id)sender {
 +  remote_cocoa::NativeWidgetNSWindowBridge* bridge = [self bridge];
 +  if (!bridge || bridge->is_performing_native_fullscreen_toggle()) {
@@ -1321,12 +1321,12 @@ Index: src/components/remote_cocoa/app_shim/browser_native_widget_window_mac.mm
        setAlwaysShowTrafficLights:alwaysShow];
 Index: src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h
 ===================================================================
---- src.orig/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h
-+++ src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h
+--- a/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h
++++ b/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h
 @@ -7,6 +7,7 @@
-
+ 
  #import <Cocoa/Cocoa.h>
-
+ 
 +#include <array>
  #include <memory>
  #include <optional>
@@ -1338,7 +1338,7 @@ Index: src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h
 +  bool ShouldForceSquareWindowCorners() const {
 +    return force_square_window_corners_;
 +  }
-
+ 
    remote_cocoa::DragDropClient* drag_drop_client();
    bool is_translucent_window() const { return is_translucent_window_; }
 @@ -217,6 +221,9 @@ class REMOTE_COCOA_APP_SHIM_EXPORT Nativ
@@ -1348,7 +1348,7 @@ Index: src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h
 +  bool is_performing_native_fullscreen_toggle() const {
 +    return is_performing_native_fullscreen_toggle_;
 +  }
-
+ 
    bool CanGoBack() const { return can_go_back_; }
    bool CanGoForward() const { return can_go_forward_; }
 @@ -285,6 +292,10 @@ class REMOTE_COCOA_APP_SHIM_EXPORT Nativ
@@ -1365,7 +1365,7 @@ Index: src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h
 @@ -463,6 +474,31 @@ class REMOTE_COCOA_APP_SHIM_EXPORT Nativ
    // Manager of fullscreen state transitions.
    NativeWidgetNSWindowFullscreenController fullscreen_controller_{this};
-
+ 
 +  bool is_performing_native_fullscreen_toggle_ = false;
 +
 +  struct WindowButtonState {
@@ -1396,8 +1396,8 @@ Index: src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h
    bool window_visible_ = false;
 Index: src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.mm
 ===================================================================
---- src.orig/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.mm
-+++ src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.mm
+--- a/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.mm
++++ b/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.mm
 @@ -19,6 +19,7 @@
  #include "base/apple/bridging.h"
  #import "base/apple/foundation_util.h"
@@ -1409,7 +1409,7 @@ Index: src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.mm
 @@ -83,6 +84,11 @@ CG_EXTERN CGRegionRef CGRegionCreateWith
  namespace {
  constexpr auto kUIPaintTimeout = base::Milliseconds(500);
-
+ 
 +bool IsUsableWindowButtonFrame(NSRect frame) {
 +  return NSMinX(frame) >= 0 && NSMinY(frame) >= 0 && NSWidth(frame) > 0 &&
 +         NSHeight(frame) > 0;
@@ -1421,7 +1421,7 @@ Index: src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.mm
 @@ -1536,6 +1542,159 @@ void NativeWidgetNSWindowBridge::SetAnim
                                      : NSWindowAnimationBehaviorNone)];
  }
-
+ 
 +void NativeWidgetNSWindowBridge::SetStyleMask(uint64_t style_mask) {
 +  [window_ setStyleMask:style_mask];
 +  UpdateWindowGeometry();
@@ -1579,7 +1579,7 @@ Index: src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.mm
      VisibilityTransition transition) const {
    // The logic around this needs to change if new transition types are set.
 @@ -1649,6 +1808,8 @@ void NativeWidgetNSWindowBridge::Fullscr
-
+ 
  void NativeWidgetNSWindowBridge::FullscreenControllerToggleFullscreen() {
    bool is_key_window = [window_ isKeyWindow];
 +  base::AutoReset<bool> native_toggle(&is_performing_native_fullscreen_toggle_,
@@ -1589,12 +1589,12 @@ Index: src/components/remote_cocoa/app_shim/native_widget_ns_window_bridge.mm
    // When a key window moves to a different space, AppKit will focus a
 Index: src/components/remote_cocoa/common/native_widget_ns_window_host.mojom
 ===================================================================
---- src.orig/components/remote_cocoa/common/native_widget_ns_window_host.mojom
-+++ src/components/remote_cocoa/common/native_widget_ns_window_host.mojom
+--- a/components/remote_cocoa/common/native_widget_ns_window_host.mojom
++++ b/components/remote_cocoa/common/native_widget_ns_window_host.mojom
 @@ -170,6 +170,11 @@ interface NativeWidgetNSWindowHost {
    // then this will only be called when all transitions have competed.
    OnWindowFullscreenTransitionComplete(bool is_fullscreen);
-
+ 
 +  // Called when AppKit asks the NSWindow to toggle fullscreen. The host may
 +  // handle this through browser-specific fullscreen logic before falling back
 +  // to the native fullscreen transition.
@@ -1602,11 +1602,11 @@ Index: src/components/remote_cocoa/common/native_widget_ns_window_host.mojom
 +
    // Called when the window is miniaturized or deminiaturized.
    OnWindowMiniaturizedChanged(bool miniaturized);
-
+ 
 Index: src/ui/views/cocoa/native_widget_mac_ns_window_host.h
 ===================================================================
---- src.orig/ui/views/cocoa/native_widget_mac_ns_window_host.h
-+++ src/ui/views/cocoa/native_widget_mac_ns_window_host.h
+--- a/ui/views/cocoa/native_widget_mac_ns_window_host.h
++++ b/ui/views/cocoa/native_widget_mac_ns_window_host.h
 @@ -367,6 +367,7 @@ class VIEWS_EXPORT NativeWidgetMacNSWind
    void OnWindowFullscreenTransitionStart(bool target_fullscreen_state) override;
    void OnWindowFullscreenTransitionComplete(
@@ -1617,8 +1617,8 @@ Index: src/ui/views/cocoa/native_widget_mac_ns_window_host.h
    void OnWindowDisplayChanged(const display::Display& display) override;
 Index: src/ui/views/cocoa/native_widget_mac_ns_window_host.mm
 ===================================================================
---- src.orig/ui/views/cocoa/native_widget_mac_ns_window_host.mm
-+++ src/ui/views/cocoa/native_widget_mac_ns_window_host.mm
+--- a/ui/views/cocoa/native_widget_mac_ns_window_host.mm
++++ b/ui/views/cocoa/native_widget_mac_ns_window_host.mm
 @@ -105,6 +105,7 @@ class BridgedNativeWidgetHostDummy
    void OnWindowFullscreenTransitionStart(
        bool target_fullscreen_state) override {}
@@ -1630,7 +1630,7 @@ Index: src/ui/views/cocoa/native_widget_mac_ns_window_host.mm
 @@ -1441,6 +1442,10 @@ void NativeWidgetMacNSWindowHost::OnWind
    }
  }
-
+ 
 +void NativeWidgetMacNSWindowHost::OnWindowFullscreenToggleRequested() {
 +  native_widget_mac_->OnWindowFullscreenToggleRequested();
 +}
@@ -1640,26 +1640,26 @@ Index: src/ui/views/cocoa/native_widget_mac_ns_window_host.mm
    is_miniaturized_ = miniaturized;
 Index: src/ui/views/widget/native_widget_mac.h
 ===================================================================
---- src.orig/ui/views/widget/native_widget_mac.h
-+++ src/ui/views/widget/native_widget_mac.h
+--- a/ui/views/widget/native_widget_mac.h
++++ b/ui/views/widget/native_widget_mac.h
 @@ -99,6 +99,9 @@ class VIEWS_EXPORT NativeWidgetMac : pub
    // then this will only be called when all transitions have competed.
    virtual void OnWindowFullscreenTransitionComplete() {}
-
+ 
 +  // Called when AppKit asks the NSWindow to toggle fullscreen.
 +  virtual void OnWindowFullscreenToggleRequested();
 +
    // Handle "Move focus to the window toolbar" shortcut.
    virtual void OnFocusWindowToolbar() {}
-
+ 
 Index: src/ui/views/widget/native_widget_mac.mm
 ===================================================================
---- src.orig/ui/views/widget/native_widget_mac.mm
-+++ src/ui/views/widget/native_widget_mac.mm
+--- a/ui/views/widget/native_widget_mac.mm
++++ b/ui/views/widget/native_widget_mac.mm
 @@ -901,6 +901,10 @@ bool NativeWidgetMac::IsFullscreen() con
    return ns_window_host_ && ns_window_host_->target_fullscreen_state();
  }
-
+ 
 +void NativeWidgetMac::OnWindowFullscreenToggleRequested() {
 +  SetFullscreen(!IsFullscreen(), display::kInvalidDisplayId);
 +}
@@ -1669,8 +1669,8 @@ Index: src/ui/views/widget/native_widget_mac.mm
    if (!GetNSWindowMojo()) {
 Index: src/chrome/browser/ui/views/frame/multi_contents_view.cc
 ===================================================================
---- src.orig/chrome/browser/ui/views/frame/multi_contents_view.cc
-+++ src/chrome/browser/ui/views/frame/multi_contents_view.cc
+--- a/chrome/browser/ui/views/frame/multi_contents_view.cc
++++ b/chrome/browser/ui/views/frame/multi_contents_view.cc
 @@ -11,6 +11,7 @@
  #include "base/feature_list.h"
  #include "base/i18n/rtl.h"
@@ -1682,7 +1682,7 @@ Index: src/chrome/browser/ui/views/frame/multi_contents_view.cc
 @@ -57,6 +58,18 @@ namespace {
  constexpr int kSnapDistance = 15;
  constexpr float kZenTopChromeAttachedThreshold = 0.5f;
-
+ 
 +bool IsFullscreenForContentsRounding(const BrowserView* browser_view) {
 +  const views::Widget* widget = browser_view->GetWidget();
 +  if (widget && widget->IsFullscreen()) {
@@ -1700,7 +1700,7 @@ Index: src/chrome/browser/ui/views/frame/multi_contents_view.cc
    return should_show_top_separator &&
 @@ -444,7 +457,8 @@ int MultiContentsView::GetInactiveIndex(
  }
-
+ 
  void MultiContentsView::MaybeUpdateContentsBorderAndOverlay() {
 -  if (IsInSplitView() || ShouldUseRoundedFrame()) {
 +  if (IsInSplitView() || ShouldUseRoundedFrame() ||
@@ -1709,13 +1709,13 @@ Index: src/chrome/browser/ui/views/frame/multi_contents_view.cc
    }
  }
 @@ -858,11 +872,14 @@ int MultiContentsView::GetMinViewWidth(g
-
+ 
  bool MultiContentsView::ShouldUseRoundedFrame() const {
    return browser_view_->GetIsNormalType() && is_rounded_frame_pref_enabled_ &&
 -         !browser_view_->IsFullscreen();
 +         !IsFullscreenForContentsRounding(browser_view_);
  }
-
+ 
  void MultiContentsView::UpdateContentsBorderAndOverlay() const {
 -  const bool is_fullscreen = browser_view_->IsFullscreen();
 +  const bool is_fullscreen = IsFullscreenForContentsRounding(browser_view_);
@@ -1727,18 +1727,18 @@ Index: src/chrome/browser/ui/views/frame/multi_contents_view.cc
        !is_in_split && ShouldUseRoundedFrame();
 Index: src/chrome/browser/ui/views/frame/contents_container_view.cc
 ===================================================================
---- src.orig/chrome/browser/ui/views/frame/contents_container_view.cc
-+++ src/chrome/browser/ui/views/frame/contents_container_view.cc
+--- a/chrome/browser/ui/views/frame/contents_container_view.cc
++++ b/chrome/browser/ui/views/frame/contents_container_view.cc
 @@ -206,16 +206,16 @@ void ContentsContainerView::UpdateBorder
    round_bottom_right_window_corner_ = round_bottom_right;
-
+ 
    if (!should_round_contents) {
 -    if (split_changed || rounded_contents_changed) {
 +    if (split_changed || rounded_contents_changed || corner_state_changed) {
        SetBorder(nullptr);
 -      ClearBorderRoundedCorners();
 +    }
-
+ 
 -      container_outline_->SetVisible(false);
 -      if (capture_contents_border_widget_) {
 -        static_cast<ContentsCaptureBorderView*>(
@@ -1755,12 +1755,12 @@ Index: src/chrome/browser/ui/views/frame/contents_container_view.cc
    } else {
      if (split_changed || rounded_contents_changed) {
 @@ -372,6 +372,9 @@ void ContentsContainerView::ClearBorderR
-
+ 
    contents_view_->SetBackgroundRadii(kNoRoundedCorners);
    contents_view_->holder()->SetCornerRadii(kNoRoundedCorners);
 +  if (auto* const layer = contents_view_->layer()) {
 +    layer->SetIsFastRoundedCorner(false);
 +  }
-
+ 
    if (new_tab_footer_view_) {
      new_tab_footer_view_->holder()->SetCornerRadii(kNoRoundedCorners);

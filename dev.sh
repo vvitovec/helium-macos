@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-_root_dir=$(dirname $(greadlink -f $0))
+_root_dir="$(dirname "$(greadlink -f "$0")")"
 
 source "$_root_dir/env.sh"
 source "$_root_dir/devutils/set_quilt_vars.sh"
@@ -53,7 +53,9 @@ ___helium_setup_gn() {
 }
 
 ___helium_info_pull() {
-    "$_root_dir/retrieve_and_unpack_resource.sh" -d -g
+    # fall back to git clone if tarball is unavailable
+    "$_root_dir/retrieve_and_unpack_resource.sh" -d -g || \
+      "$_root_dir/retrieve_and_unpack_resource.sh" -g
 
     mkdir -p "$_out_dir"
     cd "$_src_dir"
