@@ -75,6 +75,11 @@ They are framed with the same generated MacBook outline and notch overlay.
 
 ### Trying a release build
 
+The latest `notch-fullscreen-demo-v0.4` release is source-only because GitHub
+Actions are not registered on this fork right now. Build locally for a fresh
+app bundle, or use an older release only if you specifically need a prebuilt
+demo.
+
 If a release includes `Helium.app.zip`, unzip it and open the app normally. To
 keep the demo away from an existing browser profile, you can also run it with a
 separate profile:
